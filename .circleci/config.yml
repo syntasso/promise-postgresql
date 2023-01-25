@@ -109,6 +109,8 @@ workflows:
   promises:
     jobs:
       - test-and-push:
+          context:
+            - ghcr-credentials
           matrix:
             parameters:
               promise:
