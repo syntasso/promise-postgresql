@@ -1873,5 +1873,5 @@ spec:
         served: true
         storage: true
   xaasRequestPipeline:
-  - ghcr.io/syntasso/kratix-marketplace/postgresql-request-pipeline:v0.1.0
+  - ghcr.io/syntasso/promise-postgresql/postgresql-request-pipeline:v0.1.0
 status: {}
