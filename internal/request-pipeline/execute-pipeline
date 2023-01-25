@@ -26,6 +26,7 @@ fi
 # Replace defaults with user provided values
 cat ${base_instance} |
   yq eval "
+    .metadata.namespace = \"default\" |
     .metadata.name = \"${instance_name}\" |
     .spec.enableLogicalBackup = ${backup} |
     .spec.teamId = \"${team}\" |
