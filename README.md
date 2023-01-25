@@ -10,12 +10,12 @@ Check the CRD documentation for more information.
 
 To install:
 ```
-kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/postgresql/promise.yaml
+kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/promise.yaml
 ```
 
 To make a resource request (small by default):
 ```
-kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/postgresql/resource-request.yaml
+kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/resource-request.yaml
 ```
 
 ## Development
