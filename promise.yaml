@@ -350,6 +350,7 @@ spec:
       enable_spilo_wal_path_compat: false
       etcd_host: ""
       kubernetes:
+        inherited_labels: [costCentre]
         cluster_domain: cluster.local
         cluster_labels:
           application: spilo
@@ -1852,6 +1853,9 @@ spec:
             properties:
               spec:
                 properties:
+                  costCentre:
+                    pattern: "^[a-zA-Z0-9_.-]*$"
+                    type: string
                   dbName:
                     default: postgres
                     description: |
