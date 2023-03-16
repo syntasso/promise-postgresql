@@ -6,6 +6,7 @@ base_instance="/tmp/transfer/minimal-postgres-manifest.yaml"
 
 # Read current values from the provided resource request
 name="$(yq eval '.metadata.name' /input/object.yaml)"
+namespace="$(yq eval '.spec.namespace // "default"' /input/object.yaml)"
 
 env_type="$(yq eval '.spec.env // "dev"' /input/object.yaml)"
 team="$(yq eval '.spec.teamId // "acid"' /input/object.yaml)"
@@ -26,7 +27,7 @@ fi
 # Replace defaults with user provided values
 cat ${base_instance} |
   yq eval "
-    .metadata.namespace = \"default\" |
+    .metadata.namespace = \"${namespace}\" |
     .metadata.name = \"${instance_name}\" |
     .spec.enableLogicalBackup = ${backup} |
     .spec.teamId = \"${team}\" |

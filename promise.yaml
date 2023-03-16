@@ -1863,6 +1863,11 @@ spec:
                       Configures and deploys this PostgreSQL with environment specific configuration. Prod PostgreSQL are configured with backups and more resources.
                     pattern: ^(dev|prod)$
                     type: string
+                  namespace:
+                    default: default
+                    description: |
+                      Kubernetes namespace to create the Postgres cluster.
+                    type: string
                   teamId:
                     default: acid
                     description: |
