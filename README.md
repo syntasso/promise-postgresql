@@ -2,7 +2,7 @@
 
 This Promise provides Postgresql-as-a-Service. The Promise has 3 fields:
 * `.spec.env`
-* `.spec.teamID`
+* `.spec.teamId`
 * `.spec.dbName`
 
 Check the CRD documentation for more information.
