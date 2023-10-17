@@ -1,10 +1,11 @@
+---
 apiVersion: marketplace.kratix.io/v1alpha1
 kind: postgresql
 metadata:
   name: example
   namespace: default
 spec:
+  deployedBy: "InfraCloud"
   env: dev
   teamId: acid
   dbName: bestdb
-  deployedBy: "InfraCloud"

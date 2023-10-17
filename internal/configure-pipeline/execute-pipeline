@@ -23,10 +23,12 @@ if [ $env_type = "prod" ]; then
   instances="3"
 fi
 
+export DEPLOYED_BY=$(yq eval '.spec.deployedBy' /kratix/input/object.yaml)
 
 # Replace defaults with user provided values
 cat ${base_instance} |
   yq eval "
+    .metadata.labels.deployedBy = env(DEPLOYED_BY) |
     .metadata.namespace = \"${namespace}\" |
     .metadata.name = \"${instance_name}\" |
     .spec.enableLogicalBackup = ${backup} |

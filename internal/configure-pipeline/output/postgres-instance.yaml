@@ -1,0 +1,21 @@
+apiVersion: "acid.zalan.do/v1"
+kind: postgresql
+metadata:
+  name: acid-example-postgresql
+  labels:
+    deployedBy: InfraCloud
+  namespace: default
+spec:
+  teamId: "acid"
+  volume:
+    size: 1Gi
+  numberOfInstances: 1
+  users:
+    acid:
+      - superuser
+      - createdb
+  databases:
+    bestdb: acid
+  postgresql:
+    version: "15"
+  enableLogicalBackup: false

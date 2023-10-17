@@ -24,6 +24,9 @@ spec:
             properties:
               spec:
                 properties:
+                  deployedBy:
+                    pattern: "^[a-zA-Z0-9_.-]*$"
+                    type: string
                   dbName:
                     default: postgres
                     description: |
@@ -397,6 +400,7 @@ spec:
       enable_spilo_wal_path_compat: false
       etcd_host: ""
       kubernetes:
+        inherited_labels: [deployedBy]
         cluster_domain: cluster.local
         cluster_labels:
           application: spilo
@@ -1893,6 +1897,6 @@ spec:
           namespace: default
         spec:
           containers:
-          - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.1.0
+          - image: kratix-workshop/postgres-configure-pipeline:dev
             name: postgresql-configure-pipeline
 status: {}
