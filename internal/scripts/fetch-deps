@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -ex
+
 PWD="$( cd $(dirname $0)/.. && pwd)"
 
 urls=(
@@ -8,6 +10,8 @@ urls=(
     "https://raw.githubusercontent.com/zalando/postgres-operator/master/manifests/operatorconfiguration.crd.yaml"
 )
 
+mkdir -p $PWD/configure-pipeline/dependencies
+
 for url in "${urls[@]}"; do
-    curl -sL -o $PWD/resources/$(basename $url) $url
+    curl -sL -o $PWD/configure-pipeline/dependencies/$(basename $url) $url
 done

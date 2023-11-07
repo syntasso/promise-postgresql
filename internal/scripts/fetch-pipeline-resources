@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -eux
+
 PWD="$( cd $(dirname $0)/.. && pwd)"
 
 mkdir -p $PWD/configure-pipeline/resources
