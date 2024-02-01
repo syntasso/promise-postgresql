@@ -1,9 +1,9 @@
 apiVersion: platform.kratix.io/v1alpha1
 kind: Promise
 metadata:
-  creationTimestamp: null
   name: postgresql
-  namespace: default
+  labels:
+    kratix.io/promise-version: v1.0.0+beta.1
 spec:
   api:
     apiVersion: apiextensions.k8s.io/v1
