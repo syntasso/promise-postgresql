@@ -49,6 +49,9 @@ spec:
             type: object
         served: true
         storage: true
+  destinationSelectors:
+  - matchLabels:
+      environment: dev
   workflows:
     promise:
       configure:
