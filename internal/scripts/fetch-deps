@@ -5,9 +5,9 @@ set -ex
 PWD="$( cd $(dirname $0)/.. && pwd)"
 
 urls=(
-    "https://raw.githubusercontent.com/zalando/postgres-operator/master/manifests/postgresql.crd.yaml"
-    "https://raw.githubusercontent.com/zalando/postgres-operator/master/manifests/postgresteam.crd.yaml"
-    "https://raw.githubusercontent.com/zalando/postgres-operator/master/manifests/operatorconfiguration.crd.yaml"
+    "https://raw.githubusercontent.com/zalando/postgres-operator/v1.11.0/manifests/postgresql.crd.yaml"
+    "https://raw.githubusercontent.com/zalando/postgres-operator/v1.11.0/manifests/postgresteam.crd.yaml"
+    "https://raw.githubusercontent.com/zalando/postgres-operator/v1.11.0/manifests/operatorconfiguration.crd.yaml"
 )
 
 mkdir -p $PWD/configure-pipeline/dependencies
