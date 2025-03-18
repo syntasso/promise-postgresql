@@ -40,4 +40,10 @@ else
       .spec.databases = {\"$dbname\": \"$team\"} |
       del(.spec.preparedDatabases)
     " - > /kratix/output/postgres-instance.yaml
+
+  cat > /kratix/metadata/status.yaml <<EOF
+instanceName: ${instance_name}
+EOF
+
 fi
+
