@@ -42,6 +42,7 @@ else
     " - > /kratix/output/postgres-instance.yaml
 
   cat > /kratix/metadata/status.yaml <<EOF
+message: "${size} instance v16"
 instanceName: ${instance_name}
 EOF
 
