@@ -7,3 +7,4 @@ spec:
   env: dev
   teamId: acid
   dbName: bestdb
+  backupEnabled: false

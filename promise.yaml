@@ -24,6 +24,11 @@ spec:
               properties:
                 spec:
                   properties:
+                    backupEnabled:
+                      default: false
+                      type: boolean
+                      description: |
+                        Enables scheduled backups for the PostgreSQL instance.
                     dbName:
                       default: postgres
                       description: |
