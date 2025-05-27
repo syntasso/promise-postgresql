@@ -3,7 +3,7 @@ kind: Promise
 metadata:
   name: postgresql
   labels:
-    kratix.io/promise-version: v1.0.0-beta.2
+    kratix.io/promise-version: v1.0.0-beta.3
     kratix.io/backstage: "true"
 spec:
   api:
@@ -83,5 +83,5 @@ spec:
                 name: postgresql-configure-pipeline
                 env:
                 - name: MINIMUM_REPLICAS
-                  value: "1"
+                  value: "3"
 status: {}

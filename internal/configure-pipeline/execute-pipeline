@@ -19,10 +19,11 @@ else
   instance_name="${team}-${name}-postgresql"
 
   size="1Gi"
-  instances="1"
+  instances="${MINIMUM_REPLICAS:-1}"
+
   if [ $env_type = "prod" ]; then
     size="10Gi"
-    instances="3"
+    instances=$((instances + 2)) # Add 2 replicas for production
   fi
 
 
