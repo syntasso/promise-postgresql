@@ -1,5 +1,5 @@
 ---
-apiVersion: marketplace.kratix.io/v1alpha1
+apiVersion: marketplace.kratix.io/v1alpha2
 kind: postgresql
 metadata:
   name: dev
@@ -10,7 +10,7 @@ spec:
   dbName: bestdb
   backupEnabled: false
 ---
-apiVersion: marketplace.kratix.io/v1alpha1
+apiVersion: marketplace.kratix.io/v1alpha2
 kind: postgresql
 metadata:
   name: testing

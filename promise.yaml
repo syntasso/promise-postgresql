@@ -3,7 +3,7 @@ kind: Promise
 metadata:
   name: postgresql
   labels:
-    kratix.io/promise-version: v1.0.0-beta.2
+    kratix.io/promise-version: v1.0.0-beta.3
     kratix.io/backstage: "true"
 spec:
   api:
@@ -19,7 +19,7 @@ spec:
         singular: postgresql
       scope: Namespaced
       versions:
-        - name: v1alpha1
+        - name: v1alpha2
           schema:
             openAPIV3Schema:
               properties:
@@ -68,7 +68,7 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.2.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
                 name: psql-promise-pipeline
     resource:
       configure:
@@ -79,9 +79,9 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.2.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
                 name: postgresql-configure-pipeline
                 env:
-                - name: MINIMUM_REPLICAS
-                  value: "1"
+                  - name: MINIMUM_REPLICAS
+                    value: "1"
 status: {}

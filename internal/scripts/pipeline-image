@@ -5,7 +5,12 @@ PWD="$( cd $(dirname $0)/.. && pwd)"
 set -e
 
 promise_name="postgresql"
-pipeline_image="ghcr.io/syntasso/promise-${promise_name}/${promise_name}-configure-pipeline:v0.2.0"
+pipeline_dir=configure-pipeline
+version=v0.1.0
+if [ -f ${PWD}/${pipeline_dir}/VERSION ]; then
+  version=$(cat ${PWD}/${pipeline_dir}/VERSION)
+fi
+pipeline_image="ghcr.io/syntasso/promise-${promise_name}/${promise_name}-${pipeline_dir}:${version}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
