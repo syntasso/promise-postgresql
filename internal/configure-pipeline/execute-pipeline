@@ -14,16 +14,16 @@ else
   env_type="$(yq eval '.spec.env // "dev"' /kratix/input/object.yaml)"
   team="$(yq eval '.spec.teamId // "acid"' /kratix/input/object.yaml)"
   dbname="$(yq eval '.spec.dbName // "postgres"' /kratix/input/object.yaml)"
+  backup="$(yq eval '.spec.backupEnabled // false' /kratix/input/object.yaml)"
 
   instance_name="${team}-${name}-postgresql"
 
-  backup="false"
   size="1Gi"
-  instances="1"
+  instances="${MINIMUM_REPLICAS:-1}"
+
   if [ $env_type = "prod" ]; then
-    backup="true"
     size="10Gi"
-    instances="3"
+    instances=$((instances + 2)) # Add 2 replicas for production
   fi
 
 
@@ -41,9 +41,19 @@ else
       del(.spec.preparedDatabases)
     " - > /kratix/output/postgres-instance.yaml
 
+  export message="${size} instance v16 deployed successfully"
+  if ${backup}; then
+    message="${message} with backups enabled"
+  else
+    message="${message} without backups"
+  fi
+
   cat > /kratix/metadata/status.yaml <<EOF
-message: "${size} instance v16"
-instanceName: ${instance_name}
+message: "$message"
+connectionDetails:
+  host: '${instance_name}.${namespace}.svc.cluster.local'
+  credentials: 'Username and Password available in Secret: "${namespace}/postgres.${instance_name}.credentials.postgresql.acid.zalan.do"'
+instanceName: "${instance_name}"
 EOF
 
 fi
