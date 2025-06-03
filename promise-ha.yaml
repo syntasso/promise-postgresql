@@ -19,7 +19,7 @@ spec:
         singular: postgresql
       scope: Namespaced
       versions:
-        - name: v1alpha1
+        - name: v1alpha2
           schema:
             openAPIV3Schema:
               properties:
@@ -68,7 +68,7 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.2.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
                 name: psql-promise-pipeline
     resource:
       configure:
@@ -79,7 +79,7 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.2.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
                 name: postgresql-configure-pipeline
                 env:
                 - name: MINIMUM_REPLICAS
