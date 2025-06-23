@@ -39,7 +39,7 @@ else
       .spec.numberOfInstances = ${instances} |
       .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
       .spec.databases = {\"$dbname\": \"$team\"} |
-      .spec.postgresql.version =  ${version} |
+      .spec.postgresql.version =  \"${version}\" |
       del(.spec.preparedDatabases)
     " - > /kratix/output/postgres-instance.yaml
 
