@@ -20,6 +20,7 @@ else
 
   size="1Gi"
   instances="${MINIMUM_REPLICAS:-1}"
+  version="${PG_VERSION:-16}"
 
   if [ $env_type = "prod" ]; then
     size="10Gi"
@@ -38,10 +39,11 @@ else
       .spec.numberOfInstances = ${instances} |
       .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
       .spec.databases = {\"$dbname\": \"$team\"} |
+      .spec.postgresql.version =  ${version} |
       del(.spec.preparedDatabases)
     " - > /kratix/output/postgres-instance.yaml
 
-  export message="${size} instance v16 deployed successfully"
+  export message="${size} instance v${version} deployed successfully"
   if ${backup}; then
     message="${message} with backups enabled"
   else
@@ -54,7 +56,7 @@ connectionDetails:
   host: '${instance_name}.${namespace}.svc.cluster.local'
   credentials: 'Username and Password available in Secret: "${namespace}/postgres.${instance_name}.credentials.postgresql.acid.zalan.do"'
 instanceName: "${instance_name}"
+pgVersion: ${version}
 EOF
 
 fi
-
