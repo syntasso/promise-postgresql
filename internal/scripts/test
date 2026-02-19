@@ -8,6 +8,28 @@ test_promise() {
 
 test_resource_request() {
   kubectl wait --for=condition=ready --timeout=5s pod -l spilo-role=master
+
+  if [ "${VERIFY_VAULT:-false}" = "true" ]; then
+    : "${VAULT_ADDR:?VERIFY_VAULT requires VAULT_ADDR}"
+    : "${VAULT_TOKEN:?VERIFY_VAULT requires VAULT_TOKEN}"
+
+    safe_identifier="$(
+      printf "%s" "default-acme-org-team-a-example" \
+      | tr '[:upper:]' '[:lower:]' \
+      | tr -cs 'a-z0-9-' '-' \
+      | sed -e 's/^-*//' -e 's/-*$//'
+    )"
+    policy_name="postgresql-${safe_identifier}"
+    auth_role_name="postgresql-${safe_identifier}-auth"
+    db_role_name="postgresql-${safe_identifier}-db"
+
+    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
+      "${VAULT_ADDR%/}/v1/sys/policies/acl/${policy_name}" >/dev/null
+    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
+      "${VAULT_ADDR%/}/v1/auth/kubernetes/role/${auth_role_name}" >/dev/null
+    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
+      "${VAULT_ADDR%/}/v1/database/roles/${db_role_name}" >/dev/null
+  fi
 }
 
 if [ "$1" = "promise" ]; then

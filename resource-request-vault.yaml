@@ -1,0 +1,17 @@
+apiVersion: marketplace.kratix.io/v1alpha2
+kind: postgresql
+metadata:
+  name: example-vault
+  namespace: default
+spec:
+  env: dev
+  teamId: acme-org-team-a
+  dbName: bestdb
+  backupEnabled: false
+  vault:
+    enabled: true
+    appServiceAccount: app-sa
+    appServiceAccountNamespace: default
+    kubernetesAuthPath: kubernetes
+    credentialTTL: 1h
+    credentialMaxTTL: 24h
