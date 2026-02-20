@@ -444,7 +444,7 @@ spec:
                 '{bound_service_account_names: [\$sa], bound_service_account_namespaces: [\$sa_ns], token_policies: [\$policy], token_ttl: \$ttl, token_max_ttl: \$max_ttl}')"
               vault_write POST "auth/\${VAULT_AUTH_PATH}/role/\${VAULT_AUTH_ROLE_NAME}" "\$auth_payload"
 
-              creation_statements="\$(printf 'CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '\''{{password}}'\'' VALID UNTIL '\''{{expiration}}'\'';\nGRANT CONNECT ON DATABASE "%s" TO "{{name}}";\nGRANT USAGE ON SCHEMA public TO "{{name}}";\nGRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO "{{name}}";\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO "{{name}}";\n' "\${DB_NAME}")"
+              creation_statements="\$(printf 'CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '\''{{password}}'\'' VALID UNTIL '\''{{expiration}}'\'';\nGRANT CONNECT ON DATABASE "%s" TO "{{name}}";\nGRANT USAGE, CREATE ON SCHEMA public TO "{{name}}";\nGRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public TO "{{name}}";\nGRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{{name}}";\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLES TO "{{name}}";\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "{{name}}";\n' "\${DB_NAME}")"
               db_role_payload="\$(jq -nc \
                 --arg db_name "\${VAULT_DB_CONFIG_NAME_EFFECTIVE}" \
                 --arg creation_statements "\$creation_statements" \
