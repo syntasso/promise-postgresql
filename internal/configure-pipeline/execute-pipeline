@@ -420,7 +420,7 @@ spec:
               if [ -n "\${VAULT_CONNECTION_URL_PARAMETERS}" ]; then
                 connection_suffix="?\${VAULT_CONNECTION_URL_PARAMETERS}"
               fi
-              db_connection_url="postgresql://{{username}}:{{password}}@\${INSTANCE_NAME}.\${DB_NAMESPACE}.svc.cluster.local:\${VAULT_ADMIN_PORT}/\${VAULT_ADMIN_DATABASE}\${connection_suffix}"
+              db_connection_url="postgresql://{{username}}:{{password}}@\${INSTANCE_NAME}.\${DB_NAMESPACE}.svc.cluster.local:\${VAULT_ADMIN_PORT}/\${DB_NAME}\${connection_suffix}"
 
               db_config_payload="\$(jq -nc \
                 --arg plugin_name "\${VAULT_DB_PLUGIN_NAME}" \
