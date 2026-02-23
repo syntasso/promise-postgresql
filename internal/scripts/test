@@ -6,23 +6,41 @@ DEFAULT_RESOURCE_NAME="${DEFAULT_RESOURCE_NAME:-example}"
 VAULT_RESOURCE_NAME="${VAULT_RESOURCE_NAME:-example-vault}"
 VAULT_REQUEST_FILE="${VAULT_REQUEST_FILE:-resource-request-vault.yaml}"
 
+PLATFORM_CONTEXT="${PLATFORM_CONTEXT:-$(kubectl config current-context)}"
+if [ -n "${WORKER_CONTEXT:-}" ]; then
+  resolved_worker_context="$WORKER_CONTEXT"
+elif kubectl config get-contexts -o name | grep -qx "kind-worker"; then
+  resolved_worker_context="kind-worker"
+else
+  resolved_worker_context="$PLATFORM_CONTEXT"
+fi
+WORKER_CONTEXT="$resolved_worker_context"
+
 vault_resource_applied="false"
+
+kubectl_platform() {
+  kubectl --context "$PLATFORM_CONTEXT" "$@"
+}
+
+kubectl_worker() {
+  kubectl --context "$WORKER_CONTEXT" "$@"
+}
 
 cleanup() {
   if [ "$vault_resource_applied" = "true" ]; then
-    kubectl delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl_platform delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
 
 test_promise() {
-  kubectl get crds postgresqls.acid.zalan.do
-  kubectl wait --for=condition=Available --timeout=5s deployment/postgres-operator
+  kubectl_worker get crds postgresqls.acid.zalan.do
+  kubectl_worker wait --for=condition=Available --timeout=60s deployment/postgres-operator -n default
 }
 
 test_resource_request_without_vault() {
-  kubectl wait --for=condition=ready --timeout=5s pod -l spilo-role=master
-  kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$DEFAULT_RESOURCE_NAME" >/dev/null
+  kubectl_worker wait --for=condition=ready --timeout=180s pod -l spilo-role=master -n "$DEFAULT_NAMESPACE"
+  kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$DEFAULT_RESOURCE_NAME" >/dev/null
 }
 
 wait_for_non_empty_jsonpath() {
@@ -32,7 +50,7 @@ wait_for_non_empty_jsonpath() {
   elapsed=0
 
   while [ "$elapsed" -lt "$timeout_seconds" ]; do
-    value="$(kubectl get -n "$DEFAULT_NAMESPACE" "$resource" -o "jsonpath=${jsonpath}" 2>/dev/null || true)"
+    value="$(kubectl_platform get -n "$DEFAULT_NAMESPACE" "$resource" -o "jsonpath=${jsonpath}" 2>/dev/null || true)"
     if [ -n "$value" ]; then
       printf "%s" "$value"
       return 0
@@ -46,7 +64,7 @@ wait_for_non_empty_jsonpath() {
 }
 
 can_run_vault_test() {
-  [ -f "$VAULT_REQUEST_FILE" ] && kubectl get secret postgresql-vault >/dev/null 2>&1
+  [ -f "$VAULT_REQUEST_FILE" ] && kubectl_platform get secret postgresql-vault >/dev/null 2>&1
 }
 
 run_vault_api_assertions() {
@@ -54,10 +72,10 @@ run_vault_api_assertions() {
   vault_token="${VAULT_TOKEN:-}"
 
   if [ -z "$vault_addr" ]; then
-    vault_addr="$(kubectl get secret postgresql-vault -o jsonpath='{.data.address}' | base64 -d 2>/dev/null || true)"
+    vault_addr="$(kubectl_platform get secret postgresql-vault -o jsonpath='{.data.address}' | base64 -d 2>/dev/null || true)"
   fi
   if [ -z "$vault_token" ]; then
-    vault_token="$(kubectl get secret postgresql-vault -o jsonpath='{.data.token}' | base64 -d 2>/dev/null || true)"
+    vault_token="$(kubectl_platform get secret postgresql-vault -o jsonpath='{.data.token}' | base64 -d 2>/dev/null || true)"
   fi
 
   if [ -z "$vault_addr" ] || [ -z "$vault_token" ]; then
@@ -69,10 +87,10 @@ run_vault_api_assertions() {
     return 0
   fi
 
-  vault_auth_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultAuthPath}')"
-  vault_role="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultRole}')"
-  vault_db_role_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultCredentialsPath}')"
-  vault_db_config_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultDbConfigPath}')"
+  vault_auth_path="$(kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultAuthPath}')"
+  vault_role="$(kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultRole}')"
+  vault_db_role_path="$(kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultCredentialsPath}')"
+  vault_db_config_path="$(kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultDbConfigPath}')"
 
   auth_mount="${vault_auth_path#auth/}"
   auth_mount="${auth_mount%/login}"
@@ -88,13 +106,13 @@ run_vault_api_assertions() {
 }
 
 test_resource_request_with_vault() {
-  kubectl apply --filename "$VAULT_REQUEST_FILE"
+  kubectl_platform apply --filename "$VAULT_REQUEST_FILE"
   vault_resource_applied="true"
 
-  kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" >/dev/null
+  kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" >/dev/null
 
   instance_name="$(wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.instanceName}' 240)"
-  kubectl wait --for=condition=ready --timeout=180s "pod/${instance_name}-0" -n "$DEFAULT_NAMESPACE"
+  kubectl_worker wait --for=condition=ready --timeout=180s "pod/${instance_name}-0" -n "$DEFAULT_NAMESPACE"
 
   wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.connectionDetails.vaultAuthPath}' 240 >/dev/null
   wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.connectionDetails.vaultRole}' 240 >/dev/null
@@ -138,7 +156,7 @@ test_resource_request() {
   esac
 
   if [ "$vault_resource_applied" = "true" ]; then
-    kubectl delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
+    kubectl_platform delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
     vault_resource_applied="false"
   fi
 }
