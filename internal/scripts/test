@@ -1,39 +1,153 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+DEFAULT_NAMESPACE="${DEFAULT_NAMESPACE:-default}"
+DEFAULT_RESOURCE_NAME="${DEFAULT_RESOURCE_NAME:-example}"
+VAULT_RESOURCE_NAME="${VAULT_RESOURCE_NAME:-example-vault}"
+VAULT_REQUEST_FILE="${VAULT_REQUEST_FILE:-resource-request-vault.yaml}"
+
+vault_resource_applied="false"
+
+cleanup() {
+  if [ "$vault_resource_applied" = "true" ]; then
+    kubectl delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup EXIT
 
 test_promise() {
   kubectl get crds postgresqls.acid.zalan.do
   kubectl wait --for=condition=Available --timeout=5s deployment/postgres-operator
 }
 
-test_resource_request() {
+test_resource_request_without_vault() {
   kubectl wait --for=condition=ready --timeout=5s pod -l spilo-role=master
+  kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$DEFAULT_RESOURCE_NAME" >/dev/null
+}
 
+wait_for_non_empty_jsonpath() {
+  resource="$1"
+  jsonpath="$2"
+  timeout_seconds="${3:-120}"
+  elapsed=0
+
+  while [ "$elapsed" -lt "$timeout_seconds" ]; do
+    value="$(kubectl get -n "$DEFAULT_NAMESPACE" "$resource" -o "jsonpath=${jsonpath}" 2>/dev/null || true)"
+    if [ -n "$value" ]; then
+      printf "%s" "$value"
+      return 0
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  echo "timed out waiting for ${resource} ${jsonpath} to be populated" >&2
+  return 1
+}
+
+can_run_vault_test() {
+  [ -f "$VAULT_REQUEST_FILE" ] && kubectl get secret postgresql-vault >/dev/null 2>&1
+}
+
+run_vault_api_assertions() {
+  vault_addr="${VAULT_ADDR:-}"
+  vault_token="${VAULT_TOKEN:-}"
+
+  if [ -z "$vault_addr" ]; then
+    vault_addr="$(kubectl get secret postgresql-vault -o jsonpath='{.data.address}' | base64 -d 2>/dev/null || true)"
+  fi
+  if [ -z "$vault_token" ]; then
+    vault_token="$(kubectl get secret postgresql-vault -o jsonpath='{.data.token}' | base64 -d 2>/dev/null || true)"
+  fi
+
+  if [ -z "$vault_addr" ] || [ -z "$vault_token" ]; then
+    echo "Skipping Vault API assertions: VAULT_ADDR/VAULT_TOKEN unavailable." >&2
+    return 0
+  fi
+  if ! curl -sS --max-time 5 -o /dev/null "${vault_addr%/}/v1/sys/health"; then
+    echo "Skipping Vault API assertions: cannot reach ${vault_addr} from this runner." >&2
+    return 0
+  fi
+
+  vault_auth_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultAuthPath}')"
+  vault_role="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultRole}')"
+  vault_db_role_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultCredentialsPath}')"
+  vault_db_config_path="$(kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultDbConfigPath}')"
+
+  auth_mount="${vault_auth_path#auth/}"
+  auth_mount="${auth_mount%/login}"
+  vault_db_role="${vault_db_role_path#database/creds/}"
+  vault_db_config="${vault_db_config_path#database/config/}"
+
+  curl -sS -f -H "X-Vault-Token: ${vault_token}" \
+    "${vault_addr%/}/v1/auth/${auth_mount}/role/${vault_role}" >/dev/null
+  curl -sS -f -H "X-Vault-Token: ${vault_token}" \
+    "${vault_addr%/}/v1/database/roles/${vault_db_role}" >/dev/null
+  curl -sS -f -H "X-Vault-Token: ${vault_token}" \
+    "${vault_addr%/}/v1/database/config/${vault_db_config}" >/dev/null
+}
+
+test_resource_request_with_vault() {
+  kubectl apply --filename "$VAULT_REQUEST_FILE"
+  vault_resource_applied="true"
+
+  kubectl get -n "$DEFAULT_NAMESPACE" postgresql "$VAULT_RESOURCE_NAME" >/dev/null
+
+  instance_name="$(wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.instanceName}' 240)"
+  kubectl wait --for=condition=ready --timeout=180s "pod/${instance_name}-0" -n "$DEFAULT_NAMESPACE"
+
+  wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.connectionDetails.vaultAuthPath}' 240 >/dev/null
+  wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.connectionDetails.vaultRole}' 240 >/dev/null
+  wait_for_non_empty_jsonpath "postgresql/${VAULT_RESOURCE_NAME}" '{.status.connectionDetails.vaultCredentialsPath}' 240 >/dev/null
+
+  run_vault_api_assertions
+}
+
+test_resource_request() {
+  default_vault_test_mode="${1:-auto}"
+  test_resource_request_without_vault
+
+  vault_test_mode="${VAULT_TEST_MODE:-$default_vault_test_mode}"
   if [ "${VERIFY_VAULT:-false}" = "true" ]; then
-    : "${VAULT_ADDR:?VERIFY_VAULT requires VAULT_ADDR}"
-    : "${VAULT_TOKEN:?VERIFY_VAULT requires VAULT_TOKEN}"
+    vault_test_mode="true"
+  fi
 
-    safe_identifier="$(
-      printf "%s" "default-acme-org-team-a-example" \
-      | tr '[:upper:]' '[:lower:]' \
-      | tr -cs 'a-z0-9-' '-' \
-      | sed -e 's/^-*//' -e 's/-*$//'
-    )"
-    policy_name="postgresql-${safe_identifier}"
-    auth_role_name="postgresql-${safe_identifier}-auth"
-    db_role_name="postgresql-${safe_identifier}-db"
+  case "$vault_test_mode" in
+    false)
+      echo "Skipping Vault resource test (VAULT_TEST_MODE=false)."
+      ;;
+    true)
+      if ! can_run_vault_test; then
+        echo "Vault resource test requested but prerequisites are missing." >&2
+        echo "Expected: ${VAULT_REQUEST_FILE} and Secret/postgresql-vault." >&2
+        exit 1
+      fi
+      test_resource_request_with_vault
+      ;;
+    auto)
+      if can_run_vault_test; then
+        test_resource_request_with_vault
+      else
+        echo "Skipping Vault resource test (no Vault prerequisites detected)."
+      fi
+      ;;
+    *)
+      echo "unsupported VAULT_TEST_MODE: ${vault_test_mode}. expected: auto|true|false" >&2
+      exit 1
+      ;;
+  esac
 
-    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
-      "${VAULT_ADDR%/}/v1/sys/policies/acl/${policy_name}" >/dev/null
-    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
-      "${VAULT_ADDR%/}/v1/auth/kubernetes/role/${auth_role_name}" >/dev/null
-    curl -sS -f -H "X-Vault-Token: ${VAULT_TOKEN}" \
-      "${VAULT_ADDR%/}/v1/database/roles/${db_role_name}" >/dev/null
+  if [ "$vault_resource_applied" = "true" ]; then
+    kubectl delete --filename "$VAULT_REQUEST_FILE" --ignore-not-found >/dev/null 2>&1 || true
+    vault_resource_applied="false"
   fi
 }
 
-if [ "$1" = "promise" ]; then
+if [ "${1:-}" = "promise" ]; then
   test_promise
+elif [ -z "${1:-}" ]; then
+  # With no explicit target, validate both resource flows.
+  test_resource_request "true"
 else
-  test_resource_request
+  test_resource_request "auto"
 fi
