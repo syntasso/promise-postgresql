@@ -46,6 +46,7 @@ credential_ttl=""
 credential_max_ttl=""
 operator_credentials_secret=""
 vault_bootstrap_job_name=""
+resource_uid=""
 
 require_input_object() {
   if [ ! -f "$INPUT_OBJECT" ]; then
@@ -181,6 +182,10 @@ load_resource_spec() {
   credential_ttl="$(yq eval '.spec.vault.credentialTTL // "1h"' "$INPUT_OBJECT")"
   credential_max_ttl="$(yq eval '.spec.vault.credentialMaxTTL // "24h"' "$INPUT_OBJECT")"
   operator_credentials_secret="${team}.${instance_name}.credentials.postgresql.acid.zalan.do"
+  resource_uid="$(yq eval '.metadata.uid // ""' "$INPUT_OBJECT")"
+  if [ -z "$resource_uid" ] || [ "$resource_uid" = "null" ]; then
+    resource_uid="${namespace}-${name}-${team}"
+  fi
 
   if [ "$VAULT_ENABLED_FOR_RESOURCE" = "true" ] && [ -z "$VAULT_AUTH_PATH" ]; then
     VAULT_AUTH_PATH="$VAULT_K8S_AUTH_PATH"
@@ -261,9 +266,10 @@ render_postgres_manifest() {
 }
 
 emit_vault_worker_bootstrap_job() {
-  role_name="vault-configurator-${name}"
-  sa_name="vault-configurator-${name}"
-  job_name="vault-configure-${name}"
+  uid_suffix="$(printf "%s" "$resource_uid" | sha256sum | cut -c1-8)"
+  role_name="$(shorten_identifier "$(sanitize_identifier "vault-configurator-${name}-${uid_suffix}")" 63)"
+  sa_name="$(shorten_identifier "$(sanitize_identifier "vault-configurator-${name}-${uid_suffix}")" 63)"
+  job_name="$(shorten_identifier "$(sanitize_identifier "vault-configure-${name}-${uid_suffix}")" 63)"
   vault_bootstrap_job_name="$job_name"
 
   cat > /kratix/output/vault-bootstrap.yaml <<EOF_WORKER_BOOTSTRAP
