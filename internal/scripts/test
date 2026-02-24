@@ -1,16 +1,38 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+DEFAULT_NAMESPACE="${DEFAULT_NAMESPACE:-default}"
+DEFAULT_RESOURCE_NAME="${DEFAULT_RESOURCE_NAME:-example}"
+
+PLATFORM_CONTEXT="${PLATFORM_CONTEXT:-$(kubectl config current-context)}"
+if [ -n "${WORKER_CONTEXT:-}" ]; then
+  resolved_worker_context="$WORKER_CONTEXT"
+elif kubectl config get-contexts -o name | grep -qx "kind-worker"; then
+  resolved_worker_context="kind-worker"
+else
+  resolved_worker_context="$PLATFORM_CONTEXT"
+fi
+WORKER_CONTEXT="$resolved_worker_context"
+
+kubectl_platform() {
+  kubectl --context "$PLATFORM_CONTEXT" "$@"
+}
+
+kubectl_worker() {
+  kubectl --context "$WORKER_CONTEXT" "$@"
+}
 
 test_promise() {
-  kubectl get crds postgresqls.acid.zalan.do
-  kubectl wait --for=condition=Available --timeout=5s deployment/postgres-operator
+  kubectl_worker get crds postgresqls.acid.zalan.do
+  kubectl_worker wait --for=condition=Available --timeout=60s deployment/postgres-operator -n default
 }
 
 test_resource_request() {
-  kubectl wait --for=condition=ready --timeout=5s pod -l spilo-role=master
+  kubectl_worker wait --for=condition=ready --timeout=180s pod -l spilo-role=master -n "$DEFAULT_NAMESPACE"
+  kubectl_platform get -n "$DEFAULT_NAMESPACE" postgresql "$DEFAULT_RESOURCE_NAME" >/dev/null
 }
 
-if [ "$1" = "promise" ]; then
+if [ "${1:-}" = "promise" ]; then
   test_promise
 else
   test_resource_request

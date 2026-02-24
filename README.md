@@ -1,20 +1,26 @@
 # PostgreSQL
 
-This Promise provides Postgresql-as-a-Service. The Promise has 3 fields:
-* `.spec.env`
-* `.spec.teamId`
-* `.spec.dbName`
+This Promise provides PostgreSQL-as-a-Service.
 
-Check the CRD documentation for more information.
+## Request Fields
 
+The Promise supports the following request fields:
+- `.spec.env`
+- `.spec.teamId`
+- `.spec.dbName`
+- `.spec.backupEnabled`
 
-To install:
-```
+## Install
+
+```bash
 kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/promise.yaml
 ```
 
-To make a resource request (small by default):
-```
+## Resource Requests
+
+Default request (Kubernetes Secret credentials):
+
+```bash
 kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/main/resource-request.yaml
 ```
 

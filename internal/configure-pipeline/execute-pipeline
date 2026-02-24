@@ -1,62 +1,126 @@
 #!/usr/bin/env sh
 
-set -eux
+set -eu
 
-if [ $KRATIX_WORKFLOW_TYPE == "promise" ]; then
-  cp /tmp/transfer/dependencies/* /kratix/output/
-else
-  base_instance="/tmp/transfer/resources/minimal-postgres-manifest.yaml"
+INPUT_OBJECT="/kratix/input/object.yaml"
+BASE_INSTANCE="/tmp/transfer/resources/minimal-postgres-manifest.yaml"
 
-  # Read current values from the provided resource request
-  name="$(yq eval '.metadata.name' /kratix/input/object.yaml)"
-  namespace="$(yq eval '.spec.namespace // "default"' /kratix/input/object.yaml)"
+WORKFLOW_TYPE="${KRATIX_WORKFLOW_TYPE:-resource}"
+WORKFLOW_ACTION="${WORKFLOW_ACTION:-${KRATIX_WORKFLOW_ACTION:-configure}}"
+WORKFLOW_TYPE="$(printf "%s" "$WORKFLOW_TYPE" | tr '[:upper:]' '[:lower:]')"
+WORKFLOW_ACTION="$(printf "%s" "$WORKFLOW_ACTION" | tr '[:upper:]' '[:lower:]')"
 
-  env_type="$(yq eval '.spec.env // "dev"' /kratix/input/object.yaml)"
-  team="$(yq eval '.spec.teamId // "acid"' /kratix/input/object.yaml)"
-  dbname="$(yq eval '.spec.dbName // "postgres"' /kratix/input/object.yaml)"
-  backup="$(yq eval '.spec.backupEnabled // false' /kratix/input/object.yaml)"
+name=""
+namespace=""
+env_type=""
+team=""
+dbname=""
+backup=""
+instance_name=""
+db_host=""
+size=""
+instances=""
+version=""
+
+require_input_object() {
+  if [ ! -f "$INPUT_OBJECT" ]; then
+    echo "expected Kratix input object at $INPUT_OBJECT" >&2
+    exit 1
+  fi
+}
+
+load_resource_spec() {
+  require_input_object
+
+  name="$(yq eval '.metadata.name' "$INPUT_OBJECT")"
+  namespace="$(yq eval '.spec.namespace // "default"' "$INPUT_OBJECT")"
+  env_type="$(yq eval '.spec.env // "dev"' "$INPUT_OBJECT")"
+  team="$(yq eval '.spec.teamId // "acid"' "$INPUT_OBJECT")"
+  dbname="$(yq eval '.spec.dbName // "postgres"' "$INPUT_OBJECT")"
+  backup="$(yq eval '.spec.backupEnabled // false' "$INPUT_OBJECT")"
 
   instance_name="${team}-${name}-postgresql"
+  db_host="$(yq eval '.status.connectionDetails.host // ""' "$INPUT_OBJECT")"
+  if [ -z "$db_host" ] || [ "$db_host" = "null" ]; then
+    db_host="${instance_name}.${namespace}.svc.cluster.local"
+  fi
 
   size="1Gi"
   instances="${MINIMUM_REPLICAS:-1}"
   version="${PG_VERSION:-16}"
 
-  if [ $env_type = "prod" ]; then
+  if [ "$env_type" = "prod" ]; then
     size="10Gi"
-    instances=$((instances + 2)) # Add 2 replicas for production
+    instances="$((instances + 2))"
   fi
+}
 
+render_postgres_manifest() {
+  yq eval "
+    .metadata.namespace = \"${namespace}\" |
+    .metadata.name = \"${instance_name}\" |
+    .spec.enableLogicalBackup = ${backup} |
+    .spec.teamId = \"${team}\" |
+    .spec.volume.size = \"${size}\" |
+    .spec.numberOfInstances = ${instances} |
+    .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
+    .spec.databases = {\"${dbname}\": \"${team}\"} |
+    .spec.postgresql.version = \"${version}\" |
+    del(.spec.preparedDatabases)
+  " "$BASE_INSTANCE" > /kratix/output/postgres-instance.yaml
+}
 
-  # Replace defaults with user provided values
-  cat ${base_instance} |
-    yq eval "
-      .metadata.namespace = \"${namespace}\" |
-      .metadata.name = \"${instance_name}\" |
-      .spec.enableLogicalBackup = ${backup} |
-      .spec.teamId = \"${team}\" |
-      .spec.volume.size = \"${size}\" |
-      .spec.numberOfInstances = ${instances} |
-      .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
-      .spec.databases = {\"$dbname\": \"$team\"} |
-      .spec.postgresql.version =  \"${version}\" |
-      del(.spec.preparedDatabases)
-    " - > /kratix/output/postgres-instance.yaml
-
-  export message="${size} instance v${version} deployed successfully"
-  if ${backup}; then
+write_resource_status() {
+  message="${size} instance v${version} deployed successfully"
+  if [ "$backup" = "true" ]; then
     message="${message} with backups enabled"
   else
     message="${message} without backups"
   fi
 
-  cat > /kratix/metadata/status.yaml <<EOF
+  cat > /kratix/metadata/status.yaml <<EOF_STATUS
 message: "$message"
 connectionDetails:
-  host: '${instance_name}.${namespace}.svc.cluster.local'
+  host: '${db_host}'
   credentials: 'Username and Password available in Secret: "${namespace}/postgres.${instance_name}.credentials.postgresql.acid.zalan.do"'
 instanceName: "${instance_name}"
 pgVersion: ${version}
-EOF
+EOF_STATUS
+}
 
-fi
+handle_promise_configure() {
+  cp /tmp/transfer/dependencies/* /kratix/output/
+}
+
+handle_promise_delete() {
+  :
+}
+
+handle_resource_configure() {
+  load_resource_spec
+  render_postgres_manifest
+  write_resource_status
+}
+
+handle_resource_delete() {
+  :
+}
+
+case "${WORKFLOW_TYPE}:${WORKFLOW_ACTION}" in
+  promise:configure)
+    handle_promise_configure
+    ;;
+  promise:delete)
+    handle_promise_delete
+    ;;
+  resource:configure)
+    handle_resource_configure
+    ;;
+  resource:delete)
+    handle_resource_delete
+    ;;
+  *)
+    echo "unsupported workflow type/action: ${WORKFLOW_TYPE}:${WORKFLOW_ACTION}" >&2
+    exit 1
+    ;;
+esac

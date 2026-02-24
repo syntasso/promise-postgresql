@@ -3,7 +3,7 @@ kind: Promise
 metadata:
   name: postgresql
   labels:
-    kratix.io/promise-version: v1.0.0-beta.3
+    kratix.io/promise-version: v1.0.0-beta.4
     kratix.io/backstage: "true"
 spec:
   api:
@@ -68,8 +68,21 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.1
                 name: psql-promise-pipeline
+      delete:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: promise-delete
+            namespace: default
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.1
+                name: psql-promise-delete-pipeline
+                env:
+                  - name: WORKFLOW_ACTION
+                    value: delete
     resource:
       configure:
         - apiVersion: platform.kratix.io/v1alpha1
@@ -79,9 +92,22 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.1
                 name: postgresql-configure-pipeline
                 env:
                   - name: MINIMUM_REPLICAS
                     value: "1"
+      delete:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: instance-delete
+            namespace: default
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.1
+                name: postgresql-delete-pipeline
+                env:
+                  - name: WORKFLOW_ACTION
+                    value: delete
 status: {}
