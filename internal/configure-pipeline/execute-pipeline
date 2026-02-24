@@ -22,6 +22,7 @@ VAULT_PROMISE_POLICY_NAME="${VAULT_PROMISE_POLICY_NAME:-postgresql-promise-admin
 VAULT_ADMIN_DATABASE="${VAULT_ADMIN_DATABASE:-postgres}"
 VAULT_ADMIN_PORT="${VAULT_ADMIN_PORT:-5432}"
 VAULT_CONNECTION_URL_PARAMETERS="${VAULT_CONNECTION_URL_PARAMETERS:-sslmode=require}"
+VAULT_DB_READY_TIMEOUT_SECONDS="${VAULT_DB_READY_TIMEOUT_SECONDS:-600}"
 
 VAULT_ENABLED_FOR_RESOURCE="false"
 VAULT_AUTH_PATH=""
@@ -37,6 +38,7 @@ team=""
 dbname=""
 backup=""
 instance_name=""
+db_host=""
 size=""
 instances=""
 version=""
@@ -165,6 +167,10 @@ load_resource_spec() {
   backup="$(yq eval '.spec.backupEnabled // false' "$INPUT_OBJECT")"
 
   instance_name="${team}-${name}-postgresql"
+  db_host="$(yq eval '.status.connectionDetails.host // ""' "$INPUT_OBJECT")"
+  if [ -z "$db_host" ] || [ "$db_host" = "null" ]; then
+    db_host="${instance_name}.${namespace}.svc.cluster.local"
+  fi
 
   size="1Gi"
   instances="${MINIMUM_REPLICAS:-1}"
@@ -267,7 +273,6 @@ render_postgres_manifest() {
 
 emit_vault_worker_bootstrap_job() {
   uid_suffix="$(printf "%s" "$resource_uid" | sha256sum | cut -c1-8)"
-  role_name="$(shorten_identifier "$(sanitize_identifier "vault-configurator-${name}-${uid_suffix}")" 63)"
   sa_name="$(shorten_identifier "$(sanitize_identifier "vault-configurator-${name}-${uid_suffix}")" 63)"
   job_name="$(shorten_identifier "$(sanitize_identifier "vault-configure-${name}-${uid_suffix}")" 63)"
   vault_bootstrap_job_name="$job_name"
@@ -278,31 +283,6 @@ kind: ServiceAccount
 metadata:
   name: ${sa_name}
   namespace: ${namespace}
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: ${role_name}
-  namespace: ${namespace}
-rules:
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["${operator_credentials_secret}"]
-    verbs: ["get"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: ${role_name}
-  namespace: ${namespace}
-subjects:
-  - kind: ServiceAccount
-    name: ${sa_name}
-    namespace: ${namespace}
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: Role
-  name: ${role_name}
 ---
 apiVersion: batch/v1
 kind: Job
@@ -344,12 +324,22 @@ spec:
               value: "${VAULT_DB_PLUGIN_NAME}"
             - name: DB_NAME
               value: "${dbname}"
-            - name: DB_NAMESPACE
-              value: "${namespace}"
-            - name: INSTANCE_NAME
-              value: "${instance_name}"
+            - name: TEAM_ID
+              value: "${team}"
+            - name: DB_HOST
+              value: "${db_host}"
             - name: CREDENTIALS_SECRET_NAME
               value: "${operator_credentials_secret}"
+            - name: ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: "${operator_credentials_secret}"
+                  key: username
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "${operator_credentials_secret}"
+                  key: password
             - name: APP_SERVICE_ACCOUNT
               value: "${app_service_account}"
             - name: APP_SERVICE_ACCOUNT_NAMESPACE
@@ -364,34 +354,17 @@ spec:
               value: "${VAULT_ADMIN_PORT}"
             - name: VAULT_CONNECTION_URL_PARAMETERS
               value: "${VAULT_CONNECTION_URL_PARAMETERS}"
+            - name: VAULT_DB_READY_TIMEOUT_SECONDS
+              value: "${VAULT_DB_READY_TIMEOUT_SECONDS}"
           command: ["sh", "-ec"]
           args:
             - |
               set -eu
-              api_server="https://\${KUBERNETES_SERVICE_HOST}:\${KUBERNETES_SERVICE_PORT_HTTPS}"
-              token="\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
-              ca="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-              secret_url="\${api_server}/api/v1/namespaces/\${DB_NAMESPACE}/secrets/\${CREDENTIALS_SECRET_NAME}"
 
-              while true; do
-                status="\$(curl -sS -o /tmp/operator-secret.json -w '%{http_code}' --cacert "\$ca" -H "Authorization: Bearer \$token" "\$secret_url")"
-                if [ "\$status" = "200" ]; then
-                  break
-                fi
-                if [ "\$status" = "404" ]; then
-                  sleep 5
-                  continue
-                fi
-
-                echo "failed reading \${CREDENTIALS_SECRET_NAME}: HTTP \${status}" >&2
-                cat /tmp/operator-secret.json >&2 || true
-                exit 1
-              done
-
-              admin_username="\$(jq -r '.data.username // empty' /tmp/operator-secret.json | base64 -d)"
-              admin_password="\$(jq -r '.data.password // empty' /tmp/operator-secret.json | base64 -d)"
+              admin_username="\${ADMIN_USERNAME:-}"
+              admin_password="\${ADMIN_PASSWORD:-}"
               if [ -z "\$admin_username" ] || [ -z "\$admin_password" ]; then
-                echo "credentials secret \${CREDENTIALS_SECRET_NAME} does not contain username/password" >&2
+                echo "missing admin credentials from secret \${CREDENTIALS_SECRET_NAME}" >&2
                 exit 1
               fi
 
@@ -426,7 +399,45 @@ spec:
               if [ -n "\${VAULT_CONNECTION_URL_PARAMETERS}" ]; then
                 connection_suffix="?\${VAULT_CONNECTION_URL_PARAMETERS}"
               fi
-              db_connection_url="postgresql://{{username}}:{{password}}@\${INSTANCE_NAME}.\${DB_NAMESPACE}.svc.cluster.local:\${VAULT_ADMIN_PORT}/\${DB_NAME}\${connection_suffix}"
+              if [ -z "\${DB_HOST}" ] || [ "\${DB_HOST}" = "null" ]; then
+                echo "missing DB_HOST for Vault bootstrap job" >&2
+                exit 1
+              fi
+
+              pg_ready_deadline="\$((\$(date +%s) + \${VAULT_DB_READY_TIMEOUT_SECONDS}))"
+              while true; do
+                if PGPASSWORD="\$admin_password" psql \
+                  "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                  -tAc "SELECT 1" >/dev/null 2>/tmp/postgres-ready.err; then
+                  break
+                fi
+
+                if [ "\$(date +%s)" -ge "\$pg_ready_deadline" ]; then
+                  echo "postgres \${DB_HOST} was not ready within \${VAULT_DB_READY_TIMEOUT_SECONDS}s" >&2
+                  cat /tmp/postgres-ready.err >&2 || true
+                  exit 1
+                fi
+
+                sleep 5
+              done
+
+              db_exists="\$(PGPASSWORD="\$admin_password" psql \
+                "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                -tAc "SELECT 1 FROM pg_database WHERE datname = '\${DB_NAME}'" 2>/tmp/postgres-db-check.err | tr -d '[:space:]' || true)"
+              if [ "\$db_exists" != "1" ]; then
+                PGPASSWORD="\$admin_password" psql \
+                  "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                  -v ON_ERROR_STOP=1 \
+                  -c "CREATE DATABASE \"\${DB_NAME}\" OWNER \"\${TEAM_ID}\";" \
+                  >/tmp/postgres-db-create.out 2>/tmp/postgres-db-create.err || {
+                    echo "failed creating database \${DB_NAME}" >&2
+                    cat /tmp/postgres-db-check.err >&2 || true
+                    cat /tmp/postgres-db-create.err >&2 || true
+                    exit 1
+                  }
+              fi
+
+              db_connection_url="postgresql://{{username}}:{{password}}@\${DB_HOST}:\${VAULT_ADMIN_PORT}/\${DB_NAME}\${connection_suffix}"
 
               db_config_payload="\$(jq -nc \
                 --arg plugin_name "\${VAULT_DB_PLUGIN_NAME}" \
@@ -434,7 +445,7 @@ spec:
                 --arg connection_url "\$db_connection_url" \
                 --arg username "\$admin_username" \
                 --arg password "\$admin_password" \
-                '{plugin_name: \$plugin_name, allowed_roles: \$allowed_roles, connection_url: \$connection_url, username: \$username, password: \$password, verify_connection: false}')"
+                '{plugin_name: \$plugin_name, allowed_roles: \$allowed_roles, connection_url: \$connection_url, username: \$username, password: \$password, verify_connection: true}')"
               vault_write POST "database/config/\${VAULT_DB_CONFIG_NAME_EFFECTIVE}" "\$db_config_payload"
 
               resource_policy="\$(printf 'path "database/creds/%s" {\n  capabilities = ["read"]\n}\n' "\${VAULT_DB_ROLE_NAME}")"
@@ -491,7 +502,8 @@ write_resource_status() {
     cat > /kratix/metadata/status.yaml <<EOF_STATUS
 message: "$message"
 connectionDetails:
-  host: '${instance_name}.${namespace}.svc.cluster.local'
+  host: '${db_host}'
+  credentials: 'Dynamic credentials available in Vault at path: "database/creds/${VAULT_DB_ROLE_NAME}"'
   vaultAuthPath: 'auth/${VAULT_AUTH_PATH}/login'
   vaultRole: '${VAULT_AUTH_ROLE_NAME}'
   vaultDbConfigPath: 'database/config/${VAULT_DB_CONFIG_NAME_EFFECTIVE}'
@@ -504,7 +516,7 @@ EOF_STATUS
     cat > /kratix/metadata/status.yaml <<EOF_STATUS
 message: "$message"
 connectionDetails:
-  host: '${instance_name}.${namespace}.svc.cluster.local'
+  host: '${db_host}'
   credentials: 'Username and Password available in Secret: "${namespace}/postgres.${instance_name}.credentials.postgresql.acid.zalan.do"'
 instanceName: "${instance_name}"
 pgVersion: ${version}
