@@ -39,3 +39,8 @@ To test the resource request:
 kubectl apply -f resource-request.yaml
 ./scripts/test resource-request
 ```
+
+To test both resource request variants (non-Vault and Vault):
+```
+./scripts/test
+```

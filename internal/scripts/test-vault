@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PLATFORM_CTX="kind-platform"
+WORKER_CTX="kind-worker"
+RESOURCE_NS="default"
+RESOURCE_NAME="example-vault"
+VAULT_ADDR="http://vault-example.default.svc.cluster.local:8200"
+SHOW_PASSWORD="${SHOW_PASSWORD:-false}"   # set SHOW_PASSWORD=true to print password
+
+AUTH_PATH_RAW="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultAuthPath}')"
+ROLE="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultRole}')"
+CREDS_PATH="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.vaultCredentialsPath}')"
+PGHOST="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.status.connectionDetails.host}')"
+DBNAME="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.spec.dbName}')"
+SA_NAME="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.spec.vault.appServiceAccount}')"
+SA_NS="$(kubectl --context "$PLATFORM_CTX" -n "$RESOURCE_NS" get postgresql "$RESOURCE_NAME" -o jsonpath='{.spec.vault.appServiceAccountNamespace}')"
+
+AUTH_PATH="$(printf '%s' "$AUTH_PATH_RAW" | sed 's#^auth/##; s#/login$##')"
+POD_NAME="vault-pg-oneshot-$(date +%s)"
+
+cleanup() {
+  kubectl --context "$WORKER_CTX" -n "$SA_NS" delete pod "$POD_NAME" --ignore-not-found >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+cat <<EOF | kubectl --context "$WORKER_CTX" -n "$SA_NS" apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ${POD_NAME}
+spec:
+  restartPolicy: Never
+  serviceAccountName: ${SA_NAME}
+  containers:
+    - name: oneshot
+      image: postgres:16-alpine
+      env:
+        - name: VAULT_ADDR
+          value: "${VAULT_ADDR}"
+        - name: AUTH_PATH
+          value: "${AUTH_PATH}"
+        - name: ROLE
+          value: "${ROLE}"
+        - name: CREDS_PATH
+          value: "${CREDS_PATH}"
+        - name: PGHOST
+          value: "${PGHOST}"
+        - name: DBNAME
+          value: "${DBNAME}"
+        - name: SHOW_PASSWORD
+          value: "${SHOW_PASSWORD}"
+      command: ["sh", "-ec"]
+      args:
+        - |
+          set -eu
+          apk add --no-cache curl jq >/dev/null
+
+          JWT="\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)"
+          LOGIN_PAYLOAD="\$(jq -nc --arg role "\$ROLE" --arg jwt "\$JWT" '{role:\$role,jwt:\$jwt}')"
+          LOGIN_JSON="\$(curl -sS --fail -X POST -H 'Content-Type: application/json' --data "\$LOGIN_PAYLOAD" "\$VAULT_ADDR/v1/auth/\$AUTH_PATH/login")"
+          VAULT_TOKEN="\$(echo "\$LOGIN_JSON" | jq -r '.auth.client_token')"
+
+          CREDS_JSON="\$(curl -sS --fail -H "X-Vault-Token: \$VAULT_TOKEN" "\$VAULT_ADDR/v1/\$CREDS_PATH")"
+          DBUSER="\$(echo "\$CREDS_JSON" | jq -r '.data.username')"
+          DBPASS="\$(echo "\$CREDS_JSON" | jq -r '.data.password')"
+
+          echo "Vault dynamic creds:"
+          if [ "\$SHOW_PASSWORD" = "true" ]; then
+            echo "\$CREDS_JSON" | jq '{lease_id,lease_duration,renewable,data:{username:.data.username,password:.data.password}}'
+          else
+            echo "\$CREDS_JSON" | jq '{lease_id,lease_duration,renewable,data:{username:.data.username,password:"<redacted>"}}'
+          fi
+
+          echo
+          echo "Postgres check:"
+          PGPASSWORD="\$DBPASS" psql "host=\$PGHOST port=5432 dbname=\$DBNAME user=\$DBUSER sslmode=require" -v ON_ERROR_STOP=1 \
+            -c "select current_user, current_database(), now();" \
+            -c "\\conninfo" \
+            -c "\\du"
+EOF
+
+for _ in $(seq 1 120); do
+  PHASE="$(kubectl --context "$WORKER_CTX" -n "$SA_NS" get pod "$POD_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+  case "$PHASE" in
+    Running|Succeeded|Failed)
+      break
+      ;;
+  esac
+  sleep 1
+done
+
+if ! kubectl --context "$WORKER_CTX" -n "$SA_NS" logs -f "$POD_NAME"; then
+  kubectl --context "$WORKER_CTX" -n "$SA_NS" logs "$POD_NAME" || true
+fi
+
+for _ in $(seq 1 120); do
+  PHASE="$(kubectl --context "$WORKER_CTX" -n "$SA_NS" get pod "$POD_NAME" -o jsonpath='{.status.phase}')"
+  case "$PHASE" in
+    Succeeded|Failed)
+      break
+      ;;
+  esac
+  sleep 1
+done
+
+PHASE="$(kubectl --context "$WORKER_CTX" -n "$SA_NS" get pod "$POD_NAME" -o jsonpath='{.status.phase}')"
+if [ "$PHASE" != "Succeeded" ]; then
+  echo "Pod finished with phase: $PHASE" >&2
+  kubectl --context "$WORKER_CTX" -n "$SA_NS" describe pod "$POD_NAME" >&2
+  exit 1
+fi

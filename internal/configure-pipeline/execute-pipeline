@@ -1,62 +1,570 @@
 #!/usr/bin/env sh
 
-set -eux
+# Avoid shell tracing here so Vault tokens are never echoed in logs.
+set -eu
 
-if [ $KRATIX_WORKFLOW_TYPE == "promise" ]; then
-  cp /tmp/transfer/dependencies/* /kratix/output/
-else
-  base_instance="/tmp/transfer/resources/minimal-postgres-manifest.yaml"
+INPUT_OBJECT="/kratix/input/object.yaml"
+BASE_INSTANCE="/tmp/transfer/resources/minimal-postgres-manifest.yaml"
 
-  # Read current values from the provided resource request
-  name="$(yq eval '.metadata.name' /kratix/input/object.yaml)"
-  namespace="$(yq eval '.spec.namespace // "default"' /kratix/input/object.yaml)"
+WORKFLOW_TYPE="${KRATIX_WORKFLOW_TYPE:-resource}"
+WORKFLOW_ACTION="${WORKFLOW_ACTION:-${KRATIX_WORKFLOW_ACTION:-configure}}"
+WORKFLOW_TYPE="$(printf "%s" "$WORKFLOW_TYPE" | tr '[:upper:]' '[:lower:]')"
+WORKFLOW_ACTION="$(printf "%s" "$WORKFLOW_ACTION" | tr '[:upper:]' '[:lower:]')"
 
-  env_type="$(yq eval '.spec.env // "dev"' /kratix/input/object.yaml)"
-  team="$(yq eval '.spec.teamId // "acid"' /kratix/input/object.yaml)"
-  dbname="$(yq eval '.spec.dbName // "postgres"' /kratix/input/object.yaml)"
-  backup="$(yq eval '.spec.backupEnabled // false' /kratix/input/object.yaml)"
+VAULT_ADDR="${VAULT_ADDR:-}"
+VAULT_TOKEN="${VAULT_TOKEN:-}"
+VAULT_K8S_AUTH_PATH="${VAULT_K8S_AUTH_PATH:-kubernetes}"
+# VAULT_DB_CONFIG_PREFIX is used to derive per-resource database config names.
+# VAULT_DB_CONFIG_NAME is still accepted for backward compatibility.
+VAULT_DB_CONFIG_PREFIX="${VAULT_DB_CONFIG_PREFIX:-${VAULT_DB_CONFIG_NAME:-postgresql}}"
+VAULT_DB_PLUGIN_NAME="${VAULT_DB_PLUGIN_NAME:-postgresql-database-plugin}"
+VAULT_PROMISE_POLICY_NAME="${VAULT_PROMISE_POLICY_NAME:-postgresql-promise-admin}"
+VAULT_ADMIN_DATABASE="${VAULT_ADMIN_DATABASE:-postgres}"
+VAULT_ADMIN_PORT="${VAULT_ADMIN_PORT:-5432}"
+VAULT_CONNECTION_URL_PARAMETERS="${VAULT_CONNECTION_URL_PARAMETERS:-sslmode=require}"
+VAULT_DB_READY_TIMEOUT_SECONDS="${VAULT_DB_READY_TIMEOUT_SECONDS:-600}"
+
+VAULT_ENABLED_FOR_RESOURCE="false"
+VAULT_AUTH_PATH=""
+VAULT_POLICY_NAME=""
+VAULT_AUTH_ROLE_NAME=""
+VAULT_DB_ROLE_NAME=""
+VAULT_DB_CONFIG_NAME_EFFECTIVE=""
+
+name=""
+namespace=""
+env_type=""
+team=""
+dbname=""
+backup=""
+instance_name=""
+db_host=""
+size=""
+instances=""
+version=""
+app_service_account=""
+app_service_account_namespace=""
+credential_ttl=""
+credential_max_ttl=""
+operator_credentials_secret=""
+vault_bootstrap_job_name=""
+resource_uid=""
+
+require_input_object() {
+  if [ ! -f "$INPUT_OBJECT" ]; then
+    echo "expected Kratix input object at $INPUT_OBJECT" >&2
+    exit 1
+  fi
+}
+
+sanitize_identifier() {
+  printf "%s" "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed -e 's/^-*//' -e 's/-*$//'
+}
+
+shorten_identifier() {
+  value="$1"
+  max_len="$2"
+
+  if [ "${#value}" -le "$max_len" ]; then
+    printf "%s" "$value"
+    return
+  fi
+
+  hash="$(printf "%s" "$value" | sha256sum | cut -c1-8)"
+  keep_len="$((max_len - 9))"
+  if [ "$keep_len" -lt 1 ]; then
+    keep_len=1
+  fi
+
+  prefix="$(printf "%s" "$value" | cut -c1-"$keep_len" | sed -e 's/-*$//')"
+  if [ -z "$prefix" ]; then
+    printf "%s" "$hash"
+    return
+  fi
+
+  printf "%s-%s" "$prefix" "$hash"
+}
+
+vault_ready() {
+  [ -n "$VAULT_ADDR" ] && [ -n "$VAULT_TOKEN" ]
+}
+
+vault_require_client() {
+  if ! vault_ready; then
+    echo "Vault is enabled for this request but VAULT_ADDR or VAULT_TOKEN is not configured" >&2
+    exit 1
+  fi
+}
+
+vault_url() {
+  printf "%s/v1/%s" "${VAULT_ADDR%/}" "$1"
+}
+
+vault_write() {
+  method="$1"
+  path="$2"
+  payload="${3:-}"
+
+  if [ -n "$payload" ]; then
+    curl -sS -f -X "$method" \
+      -H "X-Vault-Token: $VAULT_TOKEN" \
+      -H "Content-Type: application/json" \
+      --data "$payload" \
+      "$(vault_url "$path")" >/dev/null
+  else
+    curl -sS -f -X "$method" \
+      -H "X-Vault-Token: $VAULT_TOKEN" \
+      "$(vault_url "$path")" >/dev/null
+  fi
+}
+
+vault_delete_ignore_missing() {
+  path="$1"
+
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    "$(vault_url "$path")")"
+
+  case "$code" in
+    2*|404)
+      return 0
+      ;;
+    *)
+      echo "Vault delete failed for $path with HTTP $code" >&2
+      return 1
+      ;;
+  esac
+}
+
+vault_revoke_prefix_ignore_missing() {
+  payload="$1"
+
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT \
+    -H "X-Vault-Token: $VAULT_TOKEN" \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    "$(vault_url "sys/leases/revoke-prefix")")"
+
+  case "$code" in
+    2*|404)
+      return 0
+      ;;
+    *)
+      echo "Vault lease revoke-prefix failed with HTTP $code" >&2
+      return 1
+      ;;
+  esac
+}
+
+load_resource_spec() {
+  require_input_object
+
+  name="$(yq eval '.metadata.name' "$INPUT_OBJECT")"
+  namespace="$(yq eval '.spec.namespace // "default"' "$INPUT_OBJECT")"
+  env_type="$(yq eval '.spec.env // "dev"' "$INPUT_OBJECT")"
+  team="$(yq eval '.spec.teamId // "acid"' "$INPUT_OBJECT")"
+  dbname="$(yq eval '.spec.dbName // "postgres"' "$INPUT_OBJECT")"
+  backup="$(yq eval '.spec.backupEnabled // false' "$INPUT_OBJECT")"
 
   instance_name="${team}-${name}-postgresql"
+  db_host="$(yq eval '.status.connectionDetails.host // ""' "$INPUT_OBJECT")"
+  if [ -z "$db_host" ] || [ "$db_host" = "null" ]; then
+    db_host="${instance_name}.${namespace}.svc.cluster.local"
+  fi
 
   size="1Gi"
   instances="${MINIMUM_REPLICAS:-1}"
   version="${PG_VERSION:-16}"
 
-  if [ $env_type = "prod" ]; then
+  if [ "$env_type" = "prod" ]; then
     size="10Gi"
-    instances=$((instances + 2)) # Add 2 replicas for production
+    instances="$((instances + 2))"
   fi
 
+  VAULT_ENABLED_FOR_RESOURCE="$(yq eval '.spec.vault.enabled // false' "$INPUT_OBJECT")"
+  VAULT_AUTH_PATH="$(yq eval '.spec.vault.kubernetesAuthPath // "kubernetes"' "$INPUT_OBJECT")"
+  app_service_account="$(yq eval '.spec.vault.appServiceAccount // "default"' "$INPUT_OBJECT")"
+  app_service_account_namespace="$(yq eval '.spec.vault.appServiceAccountNamespace // .spec.namespace // "default"' "$INPUT_OBJECT")"
+  credential_ttl="$(yq eval '.spec.vault.credentialTTL // "1h"' "$INPUT_OBJECT")"
+  credential_max_ttl="$(yq eval '.spec.vault.credentialMaxTTL // "24h"' "$INPUT_OBJECT")"
+  operator_credentials_secret="${team}.${instance_name}.credentials.postgresql.acid.zalan.do"
+  resource_uid="$(yq eval '.metadata.uid // ""' "$INPUT_OBJECT")"
+  if [ -z "$resource_uid" ] || [ "$resource_uid" = "null" ]; then
+    resource_uid="${namespace}-${name}-${team}"
+  fi
 
-  # Replace defaults with user provided values
-  cat ${base_instance} |
-    yq eval "
-      .metadata.namespace = \"${namespace}\" |
-      .metadata.name = \"${instance_name}\" |
-      .spec.enableLogicalBackup = ${backup} |
-      .spec.teamId = \"${team}\" |
-      .spec.volume.size = \"${size}\" |
-      .spec.numberOfInstances = ${instances} |
-      .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
-      .spec.databases = {\"$dbname\": \"$team\"} |
-      .spec.postgresql.version =  \"${version}\" |
-      del(.spec.preparedDatabases)
-    " - > /kratix/output/postgres-instance.yaml
+  if [ "$VAULT_ENABLED_FOR_RESOURCE" = "true" ] && [ -z "$VAULT_AUTH_PATH" ]; then
+    VAULT_AUTH_PATH="$VAULT_K8S_AUTH_PATH"
+  fi
 
-  export message="${size} instance v${version} deployed successfully"
-  if ${backup}; then
+}
+
+set_vault_resource_names() {
+  safe_identifier="$(sanitize_identifier "${namespace}-${team}-${name}")"
+  if [ -z "$safe_identifier" ]; then
+    safe_identifier="postgresql"
+  fi
+
+  base_name="postgresql-${safe_identifier}"
+  VAULT_POLICY_NAME="$(shorten_identifier "$base_name" 64)"
+  VAULT_AUTH_ROLE_NAME="$(shorten_identifier "${base_name}-auth" 48)"
+  VAULT_DB_ROLE_NAME="$(shorten_identifier "${base_name}-db" 64)"
+  VAULT_DB_CONFIG_NAME_EFFECTIVE="$(shorten_identifier "$(sanitize_identifier "${VAULT_DB_CONFIG_PREFIX}-${safe_identifier}")" 64)"
+}
+
+configure_promise_policy() {
+  if ! vault_ready; then
+    return 0
+  fi
+
+  policy="$(cat <<EOF_POLICY
+path "database/roles/postgresql-*" {
+  capabilities = ["create", "update", "read", "delete", "list"]
+}
+
+path "database/config/*" {
+  capabilities = ["create", "update", "read", "delete", "list"]
+}
+
+path "database/creds/postgresql-*" {
+  capabilities = ["read"]
+}
+
+path "sys/policies/acl/postgresql-*" {
+  capabilities = ["create", "update", "read", "delete", "list"]
+}
+
+path "auth/${VAULT_K8S_AUTH_PATH}/role/postgresql-*" {
+  capabilities = ["create", "update", "read", "delete", "list"]
+}
+
+path "sys/leases/revoke-prefix" {
+  capabilities = ["update"]
+}
+EOF_POLICY
+)"
+
+  payload="$(jq -nc --arg policy "$policy" '{policy: $policy}')"
+  vault_write PUT "sys/policies/acl/${VAULT_PROMISE_POLICY_NAME}" "$payload"
+}
+
+delete_promise_policy() {
+  if ! vault_ready; then
+    return 0
+  fi
+
+  vault_delete_ignore_missing "sys/policies/acl/${VAULT_PROMISE_POLICY_NAME}"
+}
+
+render_postgres_manifest() {
+  yq eval "
+    .metadata.namespace = \"${namespace}\" |
+    .metadata.name = \"${instance_name}\" |
+    .spec.enableLogicalBackup = ${backup} |
+    .spec.teamId = \"${team}\" |
+    .spec.volume.size = \"${size}\" |
+    .spec.numberOfInstances = ${instances} |
+    .spec.users = {\"${team}\": [\"superuser\", \"createdb\"]} |
+    .spec.databases = {\"${dbname}\": \"${team}\"} |
+    .spec.postgresql.version = \"${version}\" |
+    del(.spec.preparedDatabases)
+  " "$BASE_INSTANCE" > /kratix/output/postgres-instance.yaml
+}
+
+emit_vault_worker_bootstrap_job() {
+  uid_suffix="$(printf "%s" "$resource_uid" | sha256sum | cut -c1-8)"
+  sa_name="$(shorten_identifier "$(sanitize_identifier "vault-configurator-${name}-${uid_suffix}")" 63)"
+  job_name="$(shorten_identifier "$(sanitize_identifier "vault-configure-${name}-${uid_suffix}")" 63)"
+  vault_bootstrap_job_name="$job_name"
+
+  cat > /kratix/output/vault-bootstrap.yaml <<EOF_WORKER_BOOTSTRAP
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ${sa_name}
+  namespace: ${namespace}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${job_name}
+  namespace: ${namespace}
+spec:
+  ttlSecondsAfterFinished: 600
+  backoffLimit: 6
+  template:
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: ${sa_name}
+      containers:
+        - name: vault-bootstrap
+          image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.0
+          env:
+            - name: VAULT_ADDR
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-vault
+                  key: address
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-vault
+                  key: token
+            - name: VAULT_AUTH_PATH
+              value: "${VAULT_AUTH_PATH}"
+            - name: VAULT_POLICY_NAME
+              value: "${VAULT_POLICY_NAME}"
+            - name: VAULT_AUTH_ROLE_NAME
+              value: "${VAULT_AUTH_ROLE_NAME}"
+            - name: VAULT_DB_ROLE_NAME
+              value: "${VAULT_DB_ROLE_NAME}"
+            - name: VAULT_DB_CONFIG_NAME_EFFECTIVE
+              value: "${VAULT_DB_CONFIG_NAME_EFFECTIVE}"
+            - name: VAULT_DB_PLUGIN_NAME
+              value: "${VAULT_DB_PLUGIN_NAME}"
+            - name: DB_NAME
+              value: "${dbname}"
+            - name: TEAM_ID
+              value: "${team}"
+            - name: DB_HOST
+              value: "${db_host}"
+            - name: CREDENTIALS_SECRET_NAME
+              value: "${operator_credentials_secret}"
+            - name: ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: "${operator_credentials_secret}"
+                  key: username
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: "${operator_credentials_secret}"
+                  key: password
+            - name: APP_SERVICE_ACCOUNT
+              value: "${app_service_account}"
+            - name: APP_SERVICE_ACCOUNT_NAMESPACE
+              value: "${app_service_account_namespace}"
+            - name: CREDENTIAL_TTL
+              value: "${credential_ttl}"
+            - name: CREDENTIAL_MAX_TTL
+              value: "${credential_max_ttl}"
+            - name: VAULT_ADMIN_DATABASE
+              value: "${VAULT_ADMIN_DATABASE}"
+            - name: VAULT_ADMIN_PORT
+              value: "${VAULT_ADMIN_PORT}"
+            - name: VAULT_CONNECTION_URL_PARAMETERS
+              value: "${VAULT_CONNECTION_URL_PARAMETERS}"
+            - name: VAULT_DB_READY_TIMEOUT_SECONDS
+              value: "${VAULT_DB_READY_TIMEOUT_SECONDS}"
+          command: ["sh", "-ec"]
+          args:
+            - |
+              set -eu
+
+              admin_username="\${ADMIN_USERNAME:-}"
+              admin_password="\${ADMIN_PASSWORD:-}"
+              if [ -z "\$admin_username" ] || [ -z "\$admin_password" ]; then
+                echo "missing admin credentials from secret \${CREDENTIALS_SECRET_NAME}" >&2
+                exit 1
+              fi
+
+              vault_url() {
+                printf "%s/v1/%s" "\${VAULT_ADDR%/}" "\$1"
+              }
+
+              vault_write() {
+                method="\$1"
+                path="\$2"
+                payload="\$3"
+                response_file="/tmp/vault-response.json"
+                code="\$(curl -sS -o "\$response_file" -w '%{http_code}' -X "\$method" \
+                  -H "X-Vault-Token: \${VAULT_TOKEN}" \
+                  -H "Content-Type: application/json" \
+                  --data "\$payload" \
+                  "\$(vault_url "\$path")")"
+
+                case "\$code" in
+                  2*)
+                    return 0
+                    ;;
+                  *)
+                    echo "vault request failed: \${method} \${path} -> HTTP \${code}" >&2
+                    cat "\$response_file" >&2 || true
+                    return 1
+                    ;;
+                esac
+              }
+
+              connection_suffix=""
+              if [ -n "\${VAULT_CONNECTION_URL_PARAMETERS}" ]; then
+                connection_suffix="?\${VAULT_CONNECTION_URL_PARAMETERS}"
+              fi
+              if [ -z "\${DB_HOST}" ] || [ "\${DB_HOST}" = "null" ]; then
+                echo "missing DB_HOST for Vault bootstrap job" >&2
+                exit 1
+              fi
+
+              pg_ready_deadline="\$((\$(date +%s) + \${VAULT_DB_READY_TIMEOUT_SECONDS}))"
+              while true; do
+                if PGPASSWORD="\$admin_password" psql \
+                  "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                  -tAc "SELECT 1" >/dev/null 2>/tmp/postgres-ready.err; then
+                  break
+                fi
+
+                if [ "\$(date +%s)" -ge "\$pg_ready_deadline" ]; then
+                  echo "postgres \${DB_HOST} was not ready within \${VAULT_DB_READY_TIMEOUT_SECONDS}s" >&2
+                  cat /tmp/postgres-ready.err >&2 || true
+                  exit 1
+                fi
+
+                sleep 5
+              done
+
+              db_exists="\$(PGPASSWORD="\$admin_password" psql \
+                "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                -tAc "SELECT 1 FROM pg_database WHERE datname = '\${DB_NAME}'" 2>/tmp/postgres-db-check.err | tr -d '[:space:]' || true)"
+              if [ "\$db_exists" != "1" ]; then
+                PGPASSWORD="\$admin_password" psql \
+                  "host=\${DB_HOST} port=\${VAULT_ADMIN_PORT} dbname=\${VAULT_ADMIN_DATABASE} user=\$admin_username sslmode=require" \
+                  -v ON_ERROR_STOP=1 \
+                  -c "CREATE DATABASE \"\${DB_NAME}\" OWNER \"\${TEAM_ID}\";" \
+                  >/tmp/postgres-db-create.out 2>/tmp/postgres-db-create.err || {
+                    echo "failed creating database \${DB_NAME}" >&2
+                    cat /tmp/postgres-db-check.err >&2 || true
+                    cat /tmp/postgres-db-create.err >&2 || true
+                    exit 1
+                  }
+              fi
+
+              db_connection_url="postgresql://{{username}}:{{password}}@\${DB_HOST}:\${VAULT_ADMIN_PORT}/\${DB_NAME}\${connection_suffix}"
+
+              db_config_payload="\$(jq -nc \
+                --arg plugin_name "\${VAULT_DB_PLUGIN_NAME}" \
+                --arg allowed_roles "\${VAULT_DB_ROLE_NAME}" \
+                --arg connection_url "\$db_connection_url" \
+                --arg username "\$admin_username" \
+                --arg password "\$admin_password" \
+                '{plugin_name: \$plugin_name, allowed_roles: \$allowed_roles, connection_url: \$connection_url, username: \$username, password: \$password, verify_connection: true}')"
+              vault_write POST "database/config/\${VAULT_DB_CONFIG_NAME_EFFECTIVE}" "\$db_config_payload"
+
+              resource_policy="\$(printf 'path "database/creds/%s" {\n  capabilities = ["read"]\n}\n' "\${VAULT_DB_ROLE_NAME}")"
+              policy_payload="\$(jq -nc --arg policy "\$resource_policy" '{policy: \$policy}')"
+              vault_write PUT "sys/policies/acl/\${VAULT_POLICY_NAME}" "\$policy_payload"
+
+              auth_payload="\$(jq -nc \
+                --arg sa "\${APP_SERVICE_ACCOUNT}" \
+                --arg sa_ns "\${APP_SERVICE_ACCOUNT_NAMESPACE}" \
+                --arg policy "\${VAULT_POLICY_NAME}" \
+                --arg ttl "\${CREDENTIAL_TTL}" \
+                --arg max_ttl "\${CREDENTIAL_MAX_TTL}" \
+                '{bound_service_account_names: [\$sa], bound_service_account_namespaces: [\$sa_ns], token_policies: [\$policy], token_ttl: \$ttl, token_max_ttl: \$max_ttl}')"
+              vault_write POST "auth/\${VAULT_AUTH_PATH}/role/\${VAULT_AUTH_ROLE_NAME}" "\$auth_payload"
+
+              creation_statements="\$(printf 'CREATE ROLE "{{name}}" WITH LOGIN PASSWORD '\''{{password}}'\'' VALID UNTIL '\''{{expiration}}'\'';\nGRANT CONNECT ON DATABASE "%s" TO "{{name}}";\nGRANT USAGE, CREATE ON SCHEMA public TO "{{name}}";\nGRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA public TO "{{name}}";\nGRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{{name}}";\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLES TO "{{name}}";\nALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO "{{name}}";\n' "\${DB_NAME}")"
+              db_role_payload="\$(jq -nc \
+                --arg db_name "\${VAULT_DB_CONFIG_NAME_EFFECTIVE}" \
+                --arg creation_statements "\$creation_statements" \
+                --arg default_ttl "\${CREDENTIAL_TTL}" \
+                --arg max_ttl "\${CREDENTIAL_MAX_TTL}" \
+                '{db_name: \$db_name, creation_statements: \$creation_statements, default_ttl: \$default_ttl, max_ttl: \$max_ttl}')"
+              vault_write POST "database/roles/\${VAULT_DB_ROLE_NAME}" "\$db_role_payload"
+EOF_WORKER_BOOTSTRAP
+}
+
+cleanup_vault_for_resource() {
+  if [ "$VAULT_ENABLED_FOR_RESOURCE" != "true" ]; then
+    return 0
+  fi
+
+  vault_require_client
+
+  set_vault_resource_names
+
+  revoke_payload="$(jq -nc --arg prefix "database/creds/${VAULT_DB_ROLE_NAME}" '{prefix: $prefix}')"
+  vault_revoke_prefix_ignore_missing "$revoke_payload"
+
+  vault_delete_ignore_missing "database/roles/${VAULT_DB_ROLE_NAME}"
+  vault_delete_ignore_missing "database/config/${VAULT_DB_CONFIG_NAME_EFFECTIVE}"
+  vault_delete_ignore_missing "auth/${VAULT_AUTH_PATH}/role/${VAULT_AUTH_ROLE_NAME}"
+  vault_delete_ignore_missing "sys/policies/acl/${VAULT_POLICY_NAME}"
+}
+
+write_resource_status() {
+  message="${size} instance v${version} deployed successfully"
+  if [ "$backup" = "true" ]; then
     message="${message} with backups enabled"
   else
     message="${message} without backups"
   fi
 
-  cat > /kratix/metadata/status.yaml <<EOF
+  if [ "$VAULT_ENABLED_FOR_RESOURCE" = "true" ]; then
+    cat > /kratix/metadata/status.yaml <<EOF_STATUS
 message: "$message"
 connectionDetails:
-  host: '${instance_name}.${namespace}.svc.cluster.local'
+  host: '${db_host}'
+  credentials: 'Dynamic credentials available in Vault at path: "database/creds/${VAULT_DB_ROLE_NAME}"'
+  vaultAuthPath: 'auth/${VAULT_AUTH_PATH}/login'
+  vaultRole: '${VAULT_AUTH_ROLE_NAME}'
+  vaultDbConfigPath: 'database/config/${VAULT_DB_CONFIG_NAME_EFFECTIVE}'
+  vaultCredentialsPath: 'database/creds/${VAULT_DB_ROLE_NAME}'
+  vaultBootstrapJob: '${vault_bootstrap_job_name}'
+instanceName: "${instance_name}"
+pgVersion: ${version}
+EOF_STATUS
+  else
+    cat > /kratix/metadata/status.yaml <<EOF_STATUS
+message: "$message"
+connectionDetails:
+  host: '${db_host}'
   credentials: 'Username and Password available in Secret: "${namespace}/postgres.${instance_name}.credentials.postgresql.acid.zalan.do"'
 instanceName: "${instance_name}"
 pgVersion: ${version}
-EOF
+EOF_STATUS
+  fi
+}
 
-fi
+handle_promise_configure() {
+  cp /tmp/transfer/dependencies/* /kratix/output/
+  configure_promise_policy
+}
+
+handle_promise_delete() {
+  delete_promise_policy
+}
+
+handle_resource_configure() {
+  load_resource_spec
+  render_postgres_manifest
+
+  if [ "$VAULT_ENABLED_FOR_RESOURCE" = "true" ]; then
+    set_vault_resource_names
+    emit_vault_worker_bootstrap_job
+  fi
+
+  write_resource_status
+}
+
+handle_resource_delete() {
+  load_resource_spec
+  cleanup_vault_for_resource
+}
+
+case "${WORKFLOW_TYPE}:${WORKFLOW_ACTION}" in
+  promise:configure)
+    handle_promise_configure
+    ;;
+  promise:delete)
+    handle_promise_delete
+    ;;
+  resource:configure)
+    handle_resource_configure
+    ;;
+  resource:delete)
+    handle_resource_delete
+    ;;
+  *)
+    echo "unsupported workflow type/action: ${WORKFLOW_TYPE}:${WORKFLOW_ACTION}" >&2
+    exit 1
+    ;;
+esac

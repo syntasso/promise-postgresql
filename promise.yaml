@@ -3,7 +3,7 @@ kind: Promise
 metadata:
   name: postgresql
   labels:
-    kratix.io/promise-version: v1.0.0-beta.3
+    kratix.io/promise-version: v1.0.0-beta.4
     kratix.io/backstage: "true"
 spec:
   api:
@@ -51,6 +51,41 @@ spec:
                       description: |
                         Team ID. A superuser role will be created with this name.
                       type: string
+                    vault:
+                      type: object
+                      description: |
+                        Optional Vault dynamic credential configuration for this PostgreSQL instance.
+                      properties:
+                        enabled:
+                          default: false
+                          type: boolean
+                          description: |
+                            Enables Vault dynamic credentials and Kubernetes auth role creation.
+                        appServiceAccount:
+                          default: default
+                          type: string
+                          description: |
+                            Kubernetes ServiceAccount name the workload will use when logging into Vault.
+                        appServiceAccountNamespace:
+                          default: default
+                          type: string
+                          description: |
+                            Kubernetes namespace of the workload ServiceAccount.
+                        kubernetesAuthPath:
+                          default: kubernetes
+                          type: string
+                          description: |
+                            Vault Kubernetes auth mount path.
+                        credentialTTL:
+                          default: 1h
+                          type: string
+                          description: |
+                            Default TTL for dynamic credentials issued by Vault.
+                        credentialMaxTTL:
+                          default: 24h
+                          type: string
+                          description: |
+                            Maximum TTL for dynamic credentials issued by Vault.
                   type: object
               type: object
           served: true
@@ -68,8 +103,50 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.0
                 name: psql-promise-pipeline
+                env:
+                  - name: VAULT_ADDR
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: address
+                  - name: VAULT_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: token
+                  - name: VAULT_K8S_AUTH_PATH
+                    value: kubernetes
+                  - name: VAULT_PROMISE_POLICY_NAME
+                    value: postgresql-promise-admin
+      delete:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: promise-delete
+            namespace: default
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.0
+                name: psql-promise-delete-pipeline
+                env:
+                  - name: WORKFLOW_ACTION
+                    value: delete
+                  - name: VAULT_ADDR
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: address
+                  - name: VAULT_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: token
+                  - name: VAULT_K8S_AUTH_PATH
+                    value: kubernetes
+                  - name: VAULT_PROMISE_POLICY_NAME
+                    value: postgresql-promise-admin
     resource:
       configure:
         - apiVersion: platform.kratix.io/v1alpha1
@@ -79,9 +156,50 @@ spec:
             namespace: default
           spec:
             containers:
-              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.3.0
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.0
                 name: postgresql-configure-pipeline
                 env:
                   - name: MINIMUM_REPLICAS
                     value: "1"
+                  - name: VAULT_ADDR
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: address
+                  - name: VAULT_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: token
+                  - name: VAULT_K8S_AUTH_PATH
+                    value: kubernetes
+                  - name: VAULT_DB_CONFIG_PREFIX
+                    value: postgresql
+                  - name: VAULT_DB_PLUGIN_NAME
+                    value: postgresql-database-plugin
+      delete:
+        - apiVersion: platform.kratix.io/v1alpha1
+          kind: Pipeline
+          metadata:
+            name: instance-delete
+            namespace: default
+          spec:
+            containers:
+              - image: ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline:v0.4.0
+                name: postgresql-delete-pipeline
+                env:
+                  - name: WORKFLOW_ACTION
+                    value: delete
+                  - name: VAULT_ADDR
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: address
+                  - name: VAULT_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: postgresql-vault
+                        key: token
+                  - name: VAULT_K8S_AUTH_PATH
+                    value: kubernetes
 status: {}
