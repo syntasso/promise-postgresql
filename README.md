@@ -1,9 +1,11 @@
 # PostgreSQL
 
-This Promise provides Postgresql-as-a-Service. The Promise has 3 fields:
+This Promise provides PostgreSQL-as-a-Service. The Promise has four fields:
+
 * `.spec.env`
 * `.spec.teamId`
 * `.spec.dbName`
+* `.spec.backupEnabled`
 
 Check the CRD documentation for more information.
 
@@ -20,7 +22,7 @@ kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/m
 
 ## Development
 
-For development see [README.md](./internal/README.md)
+For development see [README.md](./workflows/configure-pipeline/README.md)
 
 ## Questions? Feedback?
 
