@@ -8,7 +8,7 @@ on:
 jobs:
   system-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -32,6 +32,12 @@ jobs:
 
       - name: Build and load pipeline image
         run: make load-workflow
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: workflows/configure-pipeline/go.mod
+          cache-dependency-path: workflows/configure-pipeline/go.sum
 
       - name: Run tests
         run: make test

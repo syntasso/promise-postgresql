@@ -7,7 +7,10 @@ ifdef CI
 BUILD_FLAGS += --cache-from type=gha --cache-to type=gha,mode=max
 endif
 
-.PHONY: help build clean load pull push
+REPO_ROOT      ?= $(shell git rev-parse --show-toplevel)
+WORKER_CONTEXT ?= kind-worker
+
+.PHONY: help build clean load pull push test
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -28,8 +31,8 @@ pull: ## Pull the Docker image from the registry
 push: ## Push the Docker image
 	docker push $(IMAGE):$(TAG)
 
-test-promise: ## Test the promise deployment
-	./scripts/test promise
-
-test-resource-request: ## Test the resource request deployment
-	./scripts/test resource-request
+test: ## Run Ginkgo system tests
+	WORKER_CONTEXT=$(WORKER_CONTEXT) \
+	PROMISE_YAML=$(REPO_ROOT)/promise.yaml \
+	RESOURCE_REQUEST_YAML=$(REPO_ROOT)/resource-request.yaml \
+	go test -v ./test/... -timeout 10m
