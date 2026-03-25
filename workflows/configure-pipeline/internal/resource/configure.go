@@ -90,8 +90,22 @@ func Configure(sdk *kratix.KratixSDK) {
 		message += " without backups"
 	}
 
+	namespace := pgManifest.GetNamespace()
+
 	status := kratix.NewStatus()
 	if err := status.Set("message", message); err != nil {
+		log.Fatalf("failed to set status: %v", err)
+	}
+	if err := status.Set("instanceName", instanceName); err != nil {
+		log.Fatalf("failed to set status: %v", err)
+	}
+	if err := status.Set("pgVersion", version); err != nil {
+		log.Fatalf("failed to set status: %v", err)
+	}
+	if err := status.Set("connectionDetails", map[string]string{
+		"host":        fmt.Sprintf("%s.%s.svc.cluster.local", instanceName, namespace),
+		"credentials": fmt.Sprintf("Username and Password available in Secret: \"%s/postgres.%s.credentials.postgresql.acid.zalan.do\"", namespace, instanceName),
+	}); err != nil {
 		log.Fatalf("failed to set status: %v", err)
 	}
 	if err := sdk.WriteStatus(status); err != nil {
