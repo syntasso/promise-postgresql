@@ -5,7 +5,7 @@ RENDERED_RESOURCE_NAME ?= acme-org-team-a-example-postgresql
 WAIT_TIMEOUT ?= 60s
 
 .PHONY: help \
-        build-workflow load-workflow test-workflow
+        build-workflow load-workflow test test-workflow
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -16,6 +16,8 @@ build-workflow: ## Build workflow pipeline image
 
 load-workflow: ## Build and load the workflow pipeline image into kind
 	$(MAKE) -C $(WORKFLOW_DIR) load
+
+test: test-workflow ## Run all tests
 
 test-workflow: ## Test the promise in a local kind cluster
 	kubectl apply -f promise.yaml

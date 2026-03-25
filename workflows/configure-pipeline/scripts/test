@@ -3,11 +3,11 @@ set -e
 
 test_promise() {
   kubectl --context=kind-worker get crds postgresqls.acid.zalan.do
-  kubectl --context=kind-worker wait --for=condition=Available --timeout=5s deployment/postgres-operator
+  kubectl --context=kind-worker wait --for=condition=Available --timeout=120s deployment/postgres-operator
 }
 
 test_resource_request() {
-  kubectl --context=kind-worker wait --for=condition=ready --timeout=5s pod -l spilo-role=master
+  kubectl --context=kind-worker wait --for=condition=ready --timeout=300s pod -l spilo-role=master
 }
 
 if [ "$1" = "promise" ]; then

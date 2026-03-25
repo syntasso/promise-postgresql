@@ -2,6 +2,11 @@ IMAGE ?= ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline
 TAG   ?= v0.4.0
 KIND_CLUSTER ?= platform
 
+BUILD_FLAGS := -t $(IMAGE):$(TAG)
+ifdef CI
+BUILD_FLAGS += --cache-from type=gha --cache-to type=gha,mode=max
+endif
+
 .PHONY: help build clean load pull push
 
 help: ## Show this help message
@@ -9,7 +14,7 @@ help: ## Show this help message
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the Docker image
-	docker build -t $(IMAGE):$(TAG) .
+	docker buildx build $(BUILD_FLAGS) --load .
 
 clean: ## Remove the Docker image from the local machine
 	docker rmi $(IMAGE):$(TAG)
