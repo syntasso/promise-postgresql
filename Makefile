@@ -21,7 +21,9 @@ test: test-workflow ## Run all tests
 
 test-workflow: ## Test the promise in a local kind cluster
 	kubectl apply -f promise.yaml
+	kubectl wait --for=create --timeout=$(WAIT_TIMEOUT) crd/postgresqls.marketplace.kratix.io
 	kubectl wait --for=condition=Established --timeout=$(WAIT_TIMEOUT) crd/postgresqls.marketplace.kratix.io
+	kubectl --context=$(WORKER_CONTEXT) wait --for=create --timeout=$(WAIT_TIMEOUT) crd/postgresqls.acid.zalan.do
 	kubectl --context=$(WORKER_CONTEXT) wait --for=condition=Established --timeout=$(WAIT_TIMEOUT) crd/postgresqls.acid.zalan.do
 	$(MAKE) -C $(WORKFLOW_DIR) test-promise
 	kubectl apply -f resource-request.yaml
