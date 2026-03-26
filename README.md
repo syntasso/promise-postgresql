@@ -1,9 +1,11 @@
 # PostgreSQL
 
-This Promise provides Postgresql-as-a-Service. The Promise has 3 fields:
+This Promise provides PostgreSQL-as-a-Service. The Promise has four fields:
+
 * `.spec.env`
 * `.spec.teamId`
 * `.spec.dbName`
+* `.spec.backupEnabled`
 
 Check the CRD documentation for more information.
 
@@ -20,7 +22,30 @@ kubectl apply -f https://raw.githubusercontent.com/syntasso/promise-postgresql/m
 
 ## Development
 
-For development see [README.md](./internal/README.md)
+For development see [README.md](./workflows/configure-pipeline/README.md)
+
+## Releasing
+
+1. Update `promise-release.yaml` with the new version tag and URL, then commit directly to main or merge a PR:
+   ```yaml
+   spec:
+     version: vX.Y.Z
+     sourceRef:
+       type: http
+       url: https://raw.githubusercontent.com/syntasso/promise-postgresql/vX.Y.Z/promise.yaml
+   ```
+
+2. Push the pipeline image (the image tag is set in `workflows/configure-pipeline/Makefile`):
+   ```shell
+   cd workflows/configure-pipeline && make push
+   ```
+
+3. Create and push the git tag:
+   ```shell
+   git tag vX.Y.Z && git push origin vX.Y.Z
+   ```
+
+The image must be pushed before the tag is created so that the image exists in the registry when users install the promise at that tag.
 
 ## Questions? Feedback?
 
