@@ -35,18 +35,16 @@ make push
 
 ## Testing
 
-To test the promise install Kratix, and then:
+The test suite uses [Ginkgo](https://onsi.github.io/ginkgo/). To run it, install Kratix first (see the [quickstart](https://docs.kratix.io/main/guides/installing-kratix)), then:
 
 ```shell
-kubectl apply -f ../promise.yaml
-make test-promise
+make test
 ```
 
-This asserts the Promise is installed correctly.
+The tests apply `promise.yaml` and `resource-request.yaml` to the platform cluster and assert the expected state on the worker cluster. The following environment variables can be overridden:
 
-To test the resource request:
-
-```shell
-kubectl apply -f ../resource-request.yaml
-make test-resource-request
-```
+| Variable | Default | Description |
+|---|---|---|
+| `WORKER_CONTEXT` | `kind-worker` | kubeconfig context for the worker cluster |
+| `PROMISE_YAML` | `../../promise.yaml` | Path to the promise manifest |
+| `RESOURCE_REQUEST_YAML` | `../../resource-request.yaml` | Path to the resource request manifest |
