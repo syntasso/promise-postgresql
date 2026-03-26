@@ -1,5 +1,5 @@
 IMAGE ?= ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline
-TAG   ?= v1.0.0-beta.4 # x-release-please-version
+TAG   ?= v1.1.0-beta.4 # x-release-please-version
 KIND_CLUSTER ?= platform
 
 BUILD_FLAGS := -t $(IMAGE):$(TAG)
