@@ -1,12 +1,34 @@
-name: test-postgresql-promise
+name: test
 
 on:
   push:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      promise: ${{ steps.filter.outputs.promise }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            promise:
+              - 'promise.yaml'
+              - 'promise-ha.yaml'
+              - 'resource-request.yaml'
+              - 'workflows/configure-pipeline/**'
+
   system-test:
+    needs: changes
+    if: needs.changes.outputs.promise == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

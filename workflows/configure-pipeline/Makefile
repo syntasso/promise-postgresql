@@ -1,5 +1,5 @@
 IMAGE ?= ghcr.io/syntasso/promise-postgresql/postgresql-configure-pipeline
-TAG   ?= v0.4.0
+TAG   ?= v1.0.0-beta.4 # x-release-please-version
 KIND_CLUSTER ?= platform
 
 BUILD_FLAGS := -t $(IMAGE):$(TAG)
@@ -28,8 +28,8 @@ load: build ## Load the Docker image into the kind cluster
 pull: ## Pull the Docker image from the registry
 	docker pull $(IMAGE):$(TAG)
 
-push: ## Push the Docker image
-	docker push $(IMAGE):$(TAG)
+push: ## Build and push the Docker image for linux/amd64 and linux/arm64
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(IMAGE):$(TAG) --push .
 
 test: ## Run Ginkgo system tests
 	WORKER_CONTEXT=$(WORKER_CONTEXT) \

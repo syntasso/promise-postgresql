@@ -1,7 +1,7 @@
 WORKFLOW_DIR   := workflows/configure-pipeline
 WORKER_CONTEXT ?= kind-worker
 
-.PHONY: help build-workflow load-workflow test
+.PHONY: help build-workflow load-workflow push-workflow test
 
 help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -12,6 +12,9 @@ build-workflow: ## Build workflow pipeline image
 
 load-workflow: ## Build and load the workflow pipeline image into kind
 	$(MAKE) -C $(WORKFLOW_DIR) load
+
+push-workflow: ## Build and push the workflow pipeline image to the registry
+	$(MAKE) -C $(WORKFLOW_DIR) push
 
 test: ## Run all tests
 	$(MAKE) -C $(WORKFLOW_DIR) test WORKER_CONTEXT=$(WORKER_CONTEXT)
