@@ -26,26 +26,29 @@ For development see [README.md](./workflows/configure-pipeline/README.md)
 
 ## Releasing
 
-1. Update `promise-release.yaml` with the new version tag and URL, then commit directly to main or merge a PR:
-   ```yaml
-   spec:
-     version: vX.Y.Z
-     sourceRef:
-       type: http
-       url: https://raw.githubusercontent.com/syntasso/promise-postgresql/vX.Y.Z/promise.yaml
-   ```
+Releases are automated via [release-please](https://github.com/googleapis/release-please). Version bumps are determined by [Conventional Commits](https://www.conventionalcommits.org/):
 
-2. Push the pipeline image (the image tag is set in `workflows/configure-pipeline/Makefile`):
-   ```shell
-   cd workflows/configure-pipeline && make push
-   ```
+- `fix:` → patch bump
+- `feat:` → minor bump
+- `feat!:` or `BREAKING CHANGE:` → major bump
 
-3. Create and push the git tag:
-   ```shell
-   git tag vX.Y.Z && git push origin vX.Y.Z
-   ```
+### Pre-releases (beta)
 
-The image must be pushed before the tag is created so that the image exists in the registry when users install the promise at that tag.
+By default the project is in pre-release mode (`prerelease: true` in `.release-please-config.json`). On every push to `main`, release-please maintains a Release PR with the next `vX.Y.Z-beta.N` version. Merging that PR:
+
+1. Creates the git tag (e.g. `v1.0.0-beta.5`)
+2. Publishes the pipeline image to ghcr.io tagged as `v1.0.0-beta.5` — `latest` is not updated for pre-releases
+
+### Stable releases
+
+When ready to cut a stable release, open a PR that removes `"prerelease": true` from `.release-please-config.json`. Once merged, the next Release PR will target the stable version (e.g. `v1.0.0`). Merging that PR:
+
+1. Creates the git tag (e.g. `v1.0.0`)
+2. Publishes the pipeline image tagged as both `v1.0.0` and `latest`
+
+### Returning to pre-releases
+
+To start a new beta cycle after a stable release, open a PR re-adding `"prerelease": true` to `.release-please-config.json`. Subsequent releases will be `vX.Y.Z-beta.0`, `vX.Y.Z-beta.1`, etc. until `prerelease` is removed again.
 
 ## Questions? Feedback?
 
